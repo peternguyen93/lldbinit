@@ -192,6 +192,62 @@ arm_32_registers = [
 ]
 arm_64_registers = []
 
+## ------ utilities functions ------ ##
+
+def get_text_section(module):
+	for section in module.sections:
+		if section.GetName() == '__TEXT':
+			return section
+
+	return None
+
+def resolve_mem_map(target, addr):
+	found = False
+	module_name = ''
+	offset = -1
+
+	# found in load image
+	for module in target.modules:
+		for section in module.sections:
+			if section.GetLoadAddress(target) == 0xffffffffffffffff:
+				continue
+
+			start_addr = section.GetLoadAddress(target)
+			end_addr = start_addr + section.GetFileByteSize()
+
+			if start_addr <= addr <= end_addr:
+				module_name = module.file.basename
+				text_section = get_text_section(module)
+				base_addr = text_section.GetLoadAddress(target)
+				offset = addr - base_addr
+				found = True
+				break
+
+		if found:
+			break
+
+	return module_name, offset
+
+def parse_number(str_num):
+
+	if not str_num:
+		return -1
+
+	try:
+		if str_num.startswith('0x'):
+			str_num = int(str_num, 16)
+		else:
+			str_num = int(str_num)
+	except ValueError:
+		try:
+			str_num = int(str_num, 16)
+		except ValueError:
+			return -1
+
+	return str_num
+
+##### ---------------------------------------------------------------- #####
+
 def __lldb_init_module(debugger, internal_dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
 	lldb console. With GetCommandinterpreter().HandleCommand() we can consume all output
@@ -2335,58 +2391,6 @@ Where value can be a single value or an expression.
 	get_frame().reg[register].value = format(value, '#x')
 
 # xinfo command
-
-def get_text_section(module):
-	for section in module.sections:
-		if section.GetName() == '__TEXT':
-			return section
-
-	return None
-
-def resolve_mem_map(target, addr):
-	found = False
-	module_name = ''
-	offset = -1
-
-	# found in load image
-	for module in target.modules:
-		for section in module.sections:
-			if section.GetLoadAddress(target) == 0xffffffffffffffff:
-				continue
-
-			start_addr = section.GetLoadAddress(target)
-			end_addr = start_addr + section.GetFileByteSize()
-
-			if start_addr <= addr <= end_addr:
-				module_name = module.file.basename
-				text_section = get_text_section(module)
-				base_addr = text_section.GetLoadAddress(target)
-				offset = addr - base_addr
-				found = True
-				break
-
-		if found:
-			break
-
-	return module_name, offset
-
-def parse_number(str_num):
-
-	if not str_num:
-		return -1
-
-	try:
-		if str_num.startswith('0x'):
-			str_num = int(str_num, 16)
-		else:
-			str_num = int(str_num)
-	except ValueError:
-		try:
-			str_num = int(str_num, 16)
-		except ValueError:
-			return -1
-
-	return str_num
 
 def cmd_xinfo(debugger, command, result, dict):
 
