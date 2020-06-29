@@ -64,6 +64,9 @@ LLDB design:
 lldb -> debugger -> target -> process -> thread -> frame(s)
 									  -> thread -> frame(s)
 '''
+# I mainly use Python 3 as default but when debug XNU Kernel,
+# Kernel Debug Kit use Python 2 :|
+from __future__ import print_function 
 
 if __name__ == "__main__":
 	print("Run only as script from LLDB... Not as standalone program!")
@@ -80,6 +83,8 @@ import  struct
 import  argparse
 import  subprocess
 import  tempfile
+from struct import *
+from utils import *
 
 try:
 	from keystone import *
@@ -143,7 +148,7 @@ COLORS = {
 			"RESET":     "\033[0m",
 			"BOLD":      "\033[1m",
 			"UNDERLINE": "\033[4m"
-		 }
+		}
 
 DATA_WINDOW_ADDRESS = 0
 
@@ -191,62 +196,6 @@ arm_32_registers = [
 	"r9", "r10", "r11", "r12", "sp", "lr", "pc"
 ]
 arm_64_registers = []
-
-## ------ utilities functions ------ ##
-
-def get_text_section(module):
-	for section in module.sections:
-		if section.GetName() == '__TEXT':
-			return section
-
-	return None
-
-def resolve_mem_map(target, addr):
-	found = False
-	module_name = ''
-	offset = -1
-
-	# found in load image
-	for module in target.modules:
-		for section in module.sections:
-			if section.GetLoadAddress(target) == 0xffffffffffffffff:
-				continue
-
-			start_addr = section.GetLoadAddress(target)
-			end_addr = start_addr + section.GetFileByteSize()
-
-			if start_addr <= addr <= end_addr:
-				module_name = module.file.basename
-				text_section = get_text_section(module)
-				base_addr = text_section.GetLoadAddress(target)
-				offset = addr - base_addr
-				found = True
-				break
-
-		if found:
-			break
-
-	return module_name, offset
-
-def parse_number(str_num):
-
-	if not str_num:
-		return -1
-
-	try:
-		if str_num.startswith('0x'):
-			str_num = int(str_num, 16)
-		else:
-			str_num = int(str_num)
-	except ValueError:
-		try:
-			str_num = int(str_num, 16)
-		except ValueError:
-			return -1
-
-	return str_num
-
-##### ---------------------------------------------------------------- #####
 
 def __lldb_init_module(debugger, internal_dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
@@ -302,6 +251,12 @@ def __lldb_init_module(debugger, internal_dict):
 	# Image commands
 	#
 	ci.HandleCommand("command script add -f lldbinit.cmd_xinfo xinfo", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_telescope tele", res)
+	#
+	# Exploitation Helper commands
+	#
+	ci.HandleCommand("command script add -f lldbinit.cmd_pattern_create pattern_create", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_pattern_offset pattern_offset", res)
 	#
 	# Settings related commands
 	#
@@ -316,6 +271,7 @@ def __lldb_init_module(debugger, internal_dict):
 	#
 	# Breakpoint related commands
 	#
+	ci.HandleCommand("command script add -f lldbinit.cmd_m_bp mbp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bhb bhb", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bht bht", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bpt bpt", res)
@@ -462,7 +418,11 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 	[ "rip/rax/rbx/etc", "shortcuts to modify x64 registers" ],
 	[ "eip/eax/ebx/etc", "shortcuts to modify x86 register" ],
 	[ "asm32/asm64", "x86/x64 assembler using keystone" ],
-	[ "arm32/arm64/armthumb", "ARM assembler using keystone" ]
+	[ "arm32/arm64/armthumb", "ARM assembler using keystone" ],
+	[ 'tele', 'view memory page'],
+	[ 'xinfo', 'find address belong to image'],
+	[ 'pattern_create', 'create cyclic string']
+	[ 'pattern_offset', 'find offset in cyclic string']
 	]
 
 	print("lldbinit available commands:")
@@ -650,6 +610,32 @@ def output(x):
 # ---------------------------
 # Breakpoint related commands
 # ---------------------------
+
+# create breakpoint base on module name and offset
+def cmd_m_bp(debugger, command, result, _dict):
+	args = command.split(' ')
+	module_name = args[0]
+	offset = args[1]
+
+	cur_target = debugger.GetSelectedTarget()
+	target_module = find_module_by_name(cur_target, module_name)
+	if not target_module:
+		result.PutCString(f'Module {module_name} is not found')
+		return
+
+	offset = parse_number(offset)
+	if offset == -1:
+		result.PutCString('offset must be int or hex')
+		return
+
+	cur_target = debugger.GetSelectedTarget()
+	text_section = target_module.GetSectionAtIndex(0)
+	base_addr = text_section.GetLoadAddress(cur_target)
+	target_addr = base_addr + offset
+
+	cur_target.BreakpointCreateByAddress(target_addr)
+
+	result.PutCString('Done')
 
 # temporary software breakpoint
 def cmd_bpt(debugger, command, result, dict):
@@ -2413,6 +2399,94 @@ def cmd_xinfo(debugger, command, result, dict):
 
 	print(COLORS['YELLOW'] + '- {0} : 0x{1}'.format(module_name, offset) + COLORS['RESET'])
 
+def cmd_telescope(debugger, command, result, dict):
+	args = command.split(' ')
+
+	if len(args) != 2:
+		print('tele/telescope <address / $register> <length (multiply by 8 for x64 and 4 for x86)>')
+		return
+
+	if args[0].startswith('$'):
+		# may be register
+		frame = get_default_frame(debugger)
+		value = frame.FindRegister(args[0][1:]).value
+		if value == None:
+			print(f'Invalid register : {args[0]}')
+			return
+		address = parse_number(value)
+	else:
+		address = parse_number(args[0])
+
+	length = parse_number(args[1])
+
+	cur_target = debugger.GetSelectedTarget()
+	process = debugger.GetSelectedTarget().GetProcess()
+
+	error_ref = lldb.SBError()
+	memory = process.ReadMemory(address, length * 8, error_ref)
+	if error_ref.Success():
+		
+		# print telescope memory
+		for i in range(length):
+			ptr_value = unpack('<Q', memory[i*8:(i + 1)*8])[0]
+
+			print('{0}{1}{2}:\t'.format(COLORS['CYAN'], hex(address + i*8), COLORS['RESET']), end='')
+
+			if ptr_value and ((ptr_value >> 48) == 0 or (ptr_value >> 48) == 0xffff):
+				image_map, offset = resolve_mem_map(cur_target, ptr_value)
+
+				if offset > -1:
+					print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
+							COLORS['RED'], hex(ptr_value), COLORS['RESET'],
+							COLORS['YELLOW'], image_map, hex(offset), COLORS['RESET']
+						))
+				else:
+					error_ref2 = lldb.SBError()
+					process.ReadMemory(ptr_value, 1, error_ref2)
+
+					if error_ref2.Success():
+						# ptr_value is readable
+						# print(f'{CYAN}{hex(ptr_value)}{RESET}')
+						print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
+					else:
+						print(hex(ptr_value))
+			else:
+				print(hex(ptr_value))
+
+def cmd_pattern_create(debugger, command, result, _dict):
+	pattern_length = parse_number(command) 
+
+	if pattern_length <= 0:
+		print('Invalid pattern_length')
+		return
+
+	print(cyclic(pattern_length).decode('utf-8'))
+
+def cmd_pattern_offset(debugger, command, result, _dict):
+	args = command.split(' ')
+
+	if len(args) != 2:
+		print('pattern_offset <value / $register> <length (multiply by 8 for x64 and 4 for x86)>')
+		return
+
+	if args[0].startswith('$'):
+		# may be register
+		frame = get_default_frame(debugger)
+		value = frame.FindRegister(args[0][1:]).value
+		if value == None:
+			print(f'Invalid register : {args[0]}')
+			return
+		value = parse_number(value)
+	else:
+		value = parse_number(args[0])
+
+	length = parse_number(args[1])
+
+	pos = cyclic_find(value, length)
+	print('Value {0}{1}{2} locate at offset {3}{4}{5}'.format(
+		COLORS['YELLOW'], hex(value), COLORS['RESET'], COLORS['YELLOW'], hex(pos), COLORS['RESET'])
+	)
+
 # shortcut functions to modify each register
 def cmd_rip(debugger, command, result, dict):
 	update_register("rip", command)
@@ -2842,7 +2916,7 @@ def dump_jumpx86(eflags):
 	if is_i386():
 		output(" " + output_string)
 	elif is_x64():
-		output("                                              " + output_string)
+		output(" "*46 + output_string)
 	else:
 		output(output_string)
 
