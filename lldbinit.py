@@ -128,7 +128,7 @@ COLOR_REGNAME          = "GREEN"
 COLOR_CPUFLAGS         = "RED"
 COLOR_SEPARATOR        = "BLUE"
 COLOR_HIGHLIGHT_LINE   = "RED"
-COLOR_REGVAL_MODIFIED  = "RED"
+COLOR_REGVAL_MODIFIED  = "YELLOW"
 COLOR_SYMBOL_NAME      = "BLUE"
 COLOR_CURRENT_PC       = "RED"
 
@@ -178,7 +178,8 @@ All_Registers = [
 	"eip", "eax", "ebx", "ebp", "esp", "edi", "esi", "edx", "ecx"
 ]
 
-flag_regs = ('rflags', 'eflags')
+flag_regs = ('rflags', 'eflags', 'cpsr')
+
 segment_regs = ("cs", "ds", "es", "gs", "fs", "ss", "cs", "gs", "fs")
 
 x86_registers = [
@@ -195,7 +196,18 @@ arm_32_registers = [
 	"r0", "r1", "r2", "r3", "cpsr", "r4", "r5", "r6", "r7", "r8",
 	"r9", "r10", "r11", "r12", "sp", "lr", "pc"
 ]
-arm_64_registers = []
+
+aarch64_registers = [
+	'x0', 'x1', 'x2', 'x3', 'cpsr',
+	'x4', 'x5', 'x6', 'x7', 
+	'x8', 'x9', 'x10', 'x11',
+	'x12', 'x13', 'x14', 'x15', 
+	'x16', 'x17', 'x18', 'x19', 
+	'x20', 'x21', 'x22', 'x23', 
+	'x24', 'x25', 'x26', 'x27', 
+	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
+]
+
 
 def __lldb_init_module(debugger, internal_dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
@@ -2170,7 +2182,6 @@ def get_frame():
 	# this will generate a false positive when we start the target the first time because there's no context yet.
 	if not ret:
 		print("[-] warning: get_frame() failed. Is the target binary started?")
-
 	return ret
 
 def get_thread():
@@ -2243,21 +2254,18 @@ def get_color_status(addr):
 
 def is_i386():
 	arch = get_arch()
-	if arch[0:1] == "i":
-		return True
-	return False
+	return arch[0:1] == "i"
 
 def is_x64():
 	arch = get_arch()
-	if arch == "x86_64" or arch == "x86_64h":
-		return True
-	return False
+	return arch.startswith("x86_64")
 
 def is_arm():
 	arch = get_arch()
-	if "arm" in arch:
-		return True
-	return False
+	return "arm" in arch
+
+def is_aarch64():
+	return get_arch() == 'aarch64'
 
 def get_pointer_size():
 	poisz = evaluate("sizeof(long)")
@@ -2282,7 +2290,7 @@ def get_instance_object():
 
 # return the int value of a general purpose register
 def get_gp_register(reg_name):
-	regs = get_registers("general purpose")
+	regs = get_registers("general")
 	if regs == None:
 		return 0
 	for reg in regs:
@@ -2292,7 +2300,7 @@ def get_gp_register(reg_name):
 	return 0
 
 def get_gp_registers():
-	regs = get_registers("general purpose")
+	regs = get_registers("general")
 	if regs == None:
 		return 0
 	
@@ -2303,7 +2311,7 @@ def get_gp_registers():
 	return registers
 		
 def get_register(reg_name):
-	regs = get_registers("general purpose")
+	regs = get_registers("general")
 	if regs == None:
 		return "0"
 	for reg in regs:
@@ -2330,8 +2338,12 @@ def get_current_pc():
 	frame = get_frame()
 	if not frame:
 		return 0
-	pc = frame.FindRegister("pc")
-	return int(pc.GetValue(), 16)
+
+	if is_aarch64():
+		pc = get_gp_register('pc')
+	else:
+		pc = int(frame.FindRegister("pc").GetValue(), 16)
+	return pc
 
 # retrieve current stack pointer via registers information
 # XXX: add ARM
@@ -2935,7 +2947,10 @@ def print_cpu_registers(register_names):
 			color("BOLD")
 			color("UNDERLINE")
 			color(COLOR_CPUFLAGS)
-			dump_eflags(reg_val)
+			if is_arm() or is_aarch64():
+				dump_cpsr(reg_val)
+			elif is_i386() or is_x64():
+				dump_eflags(reg_val)
 			color("RESET")
 			reg_flag_val = reg_val
 		
@@ -2951,7 +2966,7 @@ def print_cpu_registers(register_names):
 
 			try:
 
-				if register_name in ('rsp', 'esp'):
+				if register_name in ('rsp', 'esp', 'sp'):
 					color("CYAN")
 
 				elif register_name in ('rip', 'eip', 'pc'):
@@ -2968,7 +2983,7 @@ def print_cpu_registers(register_names):
 			if register_name in segment_regs:
 				output("%.04X" % (reg_val))
 			else:
-				if is_x64():
+				if is_x64() or is_aarch64():
 					output("0x%.016lX" % (reg_val))
 				else:
 					output("0x%.08X" % (reg_val))
@@ -2978,7 +2993,8 @@ def print_cpu_registers(register_names):
 		if (not break_flag) and (i % 4 == 0) and i != 0:
 			output('\n')
 
-	dump_jumpx86(reg_flag_val)
+	if is_x64() or is_i386():
+		dump_jumpx86(reg_flag_val)
 	output("\n")
 	
 def dump_cpsr(cpsr):
@@ -3177,7 +3193,9 @@ def print_registers():
 		register_format = x86_64_registers
 	elif is_arm():
 		# regarm()
-		pass
+		register_format = arm_32_registers
+	elif is_aarch64():
+		register_format = aarch64_registers
 
 	print_cpu_registers(register_format)
 
@@ -4065,7 +4083,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 	GlobalListOutput = []
 	
 	arch = get_arch()
-	if not is_i386() and not is_x64() and not is_arm():
+	if not is_i386() and not is_x64() and not is_arm() and not is_aarch64():
 		#this is for ARM probably in the future... when I will need it...
 		print("[-] error: Unknown architecture : " + arch)
 		return
@@ -4073,7 +4091,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 	color(COLOR_SEPARATOR)
 	if is_i386() or is_arm():
 		output("---------------------------------------------------------------------------------")
-	elif is_x64():
+	elif is_x64() or is_aarch64():
 		output("-----------------------------------------------------------------------------------------------------------------------")
 			
 	color("BOLD")
@@ -4085,7 +4103,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("--------------------------------------------------------------------------------")
-		elif is_x64():
+		elif is_x64() or is_aarch64():
 			output("----------------------------------------------------------------------------------------------------------------------")
 		color("BOLD")
 		output("[stack]\n")
@@ -4097,7 +4115,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("---------------------------------------------------------------------------------")
-		elif is_x64():
+		elif is_x64() or is_aarch64():
 			output("-----------------------------------------------------------------------------------------------------------------------")
 		color("BOLD")
 		output("[data]\n")
@@ -4109,7 +4127,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("---------------------------------------------------------------------------------")
-		elif is_x64():
+		elif is_x64() or is_aarch64():
 			output("-----------------------------------------------------------------------------------------------------------------------")
 		color("BOLD")
 		output("[flow]\n")
@@ -4119,7 +4137,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 	color(COLOR_SEPARATOR)
 	if is_i386() or is_arm():
 		output("---------------------------------------------------------------------------------")
-	elif is_x64():
+	elif is_x64() or is_aarch64():
 		output("-----------------------------------------------------------------------------------------------------------------------")
 	color("BOLD")
 	output("[code]\n")
