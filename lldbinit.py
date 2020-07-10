@@ -1647,7 +1647,7 @@ Note: expressions supported, do not use spaces between operators.
 		if err.Success() == True:
 			break
 		size = size - 1
-	membuff = membuff + "\x00" * (0x100-size) 
+	membuff = membuff + b"\x00" * (0x100-size) 
 	color("BLUE")
 	if get_pointer_size() == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
@@ -1658,11 +1658,11 @@ Note: expressions supported, do not use spaces between operators.
 	color("BOLD")
 	output("[data]")
 	color("RESET")
-	output("\n")        
+	output("\n")
 	#output(hexdump(dump_addr, membuff, " ", 16));
 	index = 0
 	while index < 0x100:
-		data = struct.unpack("B"*16, membuff[index:index+0x10])
+		data = struct.unpack(b"B"*16, membuff[index:index+0x10])
 		if get_pointer_size() == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1747,7 +1747,7 @@ Note: expressions supported, do not use spaces between operators.
 		if err.Success() == True:
 			break
 		size = size - 2
-	membuff = membuff + "\x00" * (0x100-size)
+	membuff = membuff + b"\x00" * (0x100-size)
 
 	color("BLUE")
 	if get_pointer_size() == 4: #is_i386() or is_arm():
@@ -1916,7 +1916,7 @@ Note: expressions supported, do not use spaces between operators.
 		if err.Success() == True:
 			break
 		size = size - 8
-	membuff = membuff + "\x00" * (0x100-size)
+	membuff = membuff + b"\x00" * (0x100-size)
 	if err.Success() == False:
 		output(str(err))
 		result.PutCString("".join(GlobalListOutput))
@@ -2164,232 +2164,7 @@ Note: expressions supported, do not use spaces between operators.
 		return
 	DATA_WINDOW_ADDRESS = dump_addr
 
-# ----------------------------------------------------------
-# Functions to extract internal and process lldb information
-# ----------------------------------------------------------
-
-def get_arch():
-	return lldb.debugger.GetSelectedTarget().triple.split('-')[0]
-
-#return frame for stopped thread... there should be one at least...
-def get_frame():
-	ret = None
-	# SBProcess supports thread iteration -> SBThread
-	for thread in get_process():
-		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
-			ret = thread.GetFrameAtIndex(0)
-			break
-	# this will generate a false positive when we start the target the first time because there's no context yet.
-	if not ret:
-		print("[-] warning: get_frame() failed. Is the target binary started?")
-	return ret
-
-def get_thread():
-	ret = None
-	# SBProcess supports thread iteration -> SBThread
-	for thread in get_process():
-		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
-			ret = thread
-	
-	if ret == None:
-		print("[-] warning: get_thread() failed. Is the target binary started?")
-
-	return ret
-
-def get_target():
-	target = lldb.debugger.GetSelectedTarget()
-	if not target:
-		print("[-] error: no target available. please add a target to lldb.")
-		return
-	return target
-
-def get_process():
-	# process
-	# A read only property that returns an lldb object that represents the process (lldb.SBProcess) that this target owns.
-	return lldb.debugger.GetSelectedTarget().process
-
-# evaluate an expression and return the value it represents
-def evaluate(command):
-	frame = get_frame()
-	if frame:
-		value = frame.EvaluateExpression(command)
-		if value.IsValid() == False:
-			return None
-		try:
-			value = int(value.GetValue(), base=10)
-			return value
-		except Exception as e:
-			print("Exception on evaluate: " + str(e))
-			return None
-	# use the target version - if no target exists we can't do anything about it
-	else:
-		target = get_target()    
-		if target == None:
-			return None
-		value = target.EvaluateExpression(command)
-		if value.IsValid() == False:
-			return None
-		try:
-			value = int(value.GetValue(), base=10)
-			return value
-		except:
-			return None
-
-def get_color_status(addr):
-	target = get_target()
-	process = get_process()
-	module_name, offset = resolve_mem_map(target, addr)
-
-	if module_name:
-		# address is excutable page
-		return "RED"
-
-	error = lldb.SBError()
-	process.ReadMemory(addr, 1, error)
-	if error.Success():
-		# memory is readable
-		return "CYAN"
-
-	return "WHITE"
-
-def is_i386():
-	arch = get_arch()
-	return arch[0:1] == "i"
-
-def is_x64():
-	arch = get_arch()
-	return arch.startswith("x86_64")
-
-def is_arm():
-	arch = get_arch()
-	return "arm" in arch
-
-def is_aarch64():
-	return get_arch() == 'aarch64'
-
-def get_pointer_size():
-	poisz = evaluate("sizeof(long)")
-	return poisz
-
-# from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
-def get_instance_object():
-	instanceObject = None
-	if is_i386():
-		instanceObject = '*(id*)($esp+4)'
-	elif is_x64():
-		instanceObject = '(id)$rdi'
-	# not supported yet
-	elif is_arm():
-		instanceObject = None
-  
-	return instanceObject
-
-# -------------------------
-# Register related commands
-# -------------------------
-
-# return the int value of a general purpose register
-def get_gp_register(reg_name):
-	regs = get_registers("general")
-	if regs == None:
-		return 0
-	for reg in regs:
-		if reg_name == reg.GetName():
-			#return int(reg.GetValue(), 16)
-			return reg.unsigned
-	return 0
-
-def get_gp_registers():
-	regs = get_registers("general")
-	if regs == None:
-		return 0
-	
-	registers = {}
-	for reg in regs:
-		reg_name = reg.GetName()
-		registers[reg_name] = reg.unsigned
-	return registers
-		
-def get_register(reg_name):
-	regs = get_registers("general")
-	if regs == None:
-		return "0"
-	for reg in regs:
-		if reg_name == reg.GetName():
-			return reg.GetValue()
-	return "0"
-
-def get_registers(kind):
-	"""Returns the registers given the frame and the kind of registers desired.
-
-	Returns None if there's no such kind.
-	"""
-	frame = get_frame()
-	if not frame:
-		return None
-	registerSet = frame.GetRegisters() # Return type of SBValueList.
-	for value in registerSet:
-		if kind.lower() in value.GetName().lower():
-			return value
-	return None
-
-# retrieve current instruction pointer via platform independent $pc register
-def get_current_pc():
-	frame = get_frame()
-	if not frame:
-		return 0
-
-	if is_aarch64():
-		pc = get_gp_register('pc')
-	else:
-		pc = int(frame.FindRegister("pc").GetValue(), 16)
-	return pc
-
-# retrieve current stack pointer via registers information
-# XXX: add ARM
-def get_current_sp():
-	if is_i386():
-		sp_addr = get_gp_register("esp")
-	elif is_x64():
-		sp_addr = get_gp_register("rsp")
-	else:
-		print("[-] error: wrong architecture.")
-		return 0
-	return sp_addr
-
-# helper function that updates given register
-def update_register(register, command):
-	help = """
-Update given register with a new value.
-
-Syntax: register_name <value>
-
-Where value can be a single value or an expression.
-"""
-
-	cmd = command.split()
-	if len(cmd) == 0:
-		print("[-] error: command requires arguments.")
-		print("")
-		print(help)
-		return
-
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	value = evaluate(command)
-	if value == None:
-		print("[-] error: invalid input value.")
-		print("")
-		print(help)
-		return
-
-	# we need to format because hex() will return string with an L and that will fail to update register
-	get_frame().reg[register].value = format(value, '#x')
-
 # xinfo command
-
 def cmd_xinfo(debugger, command, result, dict):
 
 	args = command.split(' ')
@@ -2397,17 +2172,20 @@ def cmd_xinfo(debugger, command, result, dict):
 		output('Usage : xinfo <address>')
 		return
 
-	address = parse_number(args[0])
+	address = evaluate(args[0])
 	if address == -1:
 		print(COLORS['RED'] + 'Invalid address' + COLORS['RESET'])
 		return
 
 	cur_target = debugger.GetSelectedTarget()
-	module_name, offset = resolve_mem_map(cur_target, address)
-
-	if not module_name:
+	xinfo = resolve_mem_map(cur_target, address)
+	if not xinfo['module_name']:
 		print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
 		return
+
+	module_name = xinfo['module_name']
+	module_name+= '.' + xinfo['section_name']
+	offset = xinfo['offset']
 
 	print(COLORS['YELLOW'] + '- {0} : 0x{1}'.format(module_name, offset) + COLORS['RESET'])
 
@@ -2418,18 +2196,8 @@ def cmd_telescope(debugger, command, result, dict):
 		print('tele/telescope <address / $register> <length (multiply by 8 for x64 and 4 for x86)>')
 		return
 
-	if args[0].startswith('$'):
-		# may be register
-		frame = get_default_frame(debugger)
-		value = frame.FindRegister(args[0][1:]).value
-		if value == None:
-			print(f'Invalid register : {args[0]}')
-			return
-		address = parse_number(value)
-	else:
-		address = parse_number(args[0])
-
-	length = parse_number(args[1])
+	address = evaluate(args[0])
+	length = evaluate(args[1])
 
 	cur_target = debugger.GetSelectedTarget()
 	process = debugger.GetSelectedTarget().GetProcess()
@@ -2445,19 +2213,23 @@ def cmd_telescope(debugger, command, result, dict):
 			print('{0}{1}{2}:\t'.format(COLORS['CYAN'], hex(address + i*8), COLORS['RESET']), end='')
 
 			if ptr_value and ((ptr_value >> 48) == 0 or (ptr_value >> 48) == 0xffff):
-				image_map, offset = resolve_mem_map(cur_target, ptr_value)
+				xinfo = resolve_mem_map(cur_target, ptr_value)
+
+				offset = xinfo['offset']
+				module_name = xinfo['module_name']
+				module_name+= '.' + xinfo['section_name']
 
 				if offset > -1:
 					print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
 							COLORS['RED'], hex(ptr_value), COLORS['RESET'],
-							COLORS['YELLOW'], image_map, hex(offset), COLORS['RESET']
+							COLORS['YELLOW'], module_name, hex(offset), COLORS['RESET']
 						))
 				else:
 					error_ref2 = lldb.SBError()
 					process.ReadMemory(ptr_value, 1, error_ref2)
 
 					if error_ref2.Success():
-						# ptr_value is readable
+						# ptr_value is readable may be on heap or stack
 						# print(f'{CYAN}{hex(ptr_value)}{RESET}')
 						print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
 					else:
@@ -2481,17 +2253,7 @@ def cmd_pattern_offset(debugger, command, result, _dict):
 		print('pattern_offset <value / $register> <length (multiply by 8 for x64 and 4 for x86)>')
 		return
 
-	if args[0].startswith('$'):
-		# may be register
-		frame = get_default_frame(debugger)
-		value = frame.FindRegister(args[0][1:]).value
-		if value == None:
-			print(f'Invalid register : {args[0]}')
-			return
-		value = parse_number(value)
-	else:
-		value = parse_number(args[0])
-
+	value = evaluate(args[0])
 	length = parse_number(args[1])
 
 	pos = cyclic_find(value, length)
@@ -2769,435 +2531,6 @@ Syntax: cfz
 		print(help)
 		return
 	modify_eflags("ZF")
-
-def dump_eflags(eflags):
-	# the registers are printed by inverse order of bit field
-	# no idea where this comes from :-]
-	# masks = { "CF":0, "PF":2, "AF":4, "ZF":6, "SF":7, "TF":8, "IF":9, "DF":10, "OF":11 }
-	# printTuples = sorted(masks.items() , reverse=True, key=lambda x: x[1])
-	eflagsTuples = [('OF', 11), ('DF', 10), ('IF', 9), ('TF', 8), ('SF', 7), ('ZF', 6), ('AF', 4), ('PF', 2), ('CF', 0)]
-	# use the first character of each register key to output, lowercase if bit not set
-	for flag, bitfield in eflagsTuples :
-		if bool(eflags & (1 << bitfield)) == True:
-			output(flag[0] + " ")
-		else:
-			output(flag[0].lower() + " ")
-
-# function to dump the conditional jumps results
-def dump_jumpx86(eflags):
-	# masks and flags from https://github.com/ant4g0nist/lisa.py
-	masks = { "CF":0, "PF":2, "AF":4, "ZF":6, "SF":7, "TF":8, "IF":9, "DF":10, "OF":11 }
-	flags = { key: bool(eflags & (1 << value)) for key, value in masks.items() }
-
-	error = lldb.SBError()
-	target = get_target()
-	if is_i386():
-		pc_addr = get_gp_register("eip")
-	elif is_x64():
-		pc_addr = get_gp_register("rip")
-	else:
-		print("[-] error: wrong architecture.")
-		return
-
-	mnemonic = get_mnemonic(pc_addr)
-	color("RED")
-	output_string=""
-	## opcode 0x77: JA, JNBE (jump if CF=0 and ZF=0)
-	## opcode 0x0F87: JNBE, JA
-	if "ja" == mnemonic or "jnbe" == mnemonic:
-		if flags["CF"] == False and flags["ZF"] == False:
-			output_string="Jump is taken (c = 0 and z = 0)"
-		else:
-			output_string="Jump is NOT taken (c = 0 and z = 0)"
-	## opcode 0x73: JAE, JNB, JNC (jump if CF=0)
-	## opcode 0x0F83: JNC, JNB, JAE (jump if CF=0)
-	if "jae" == mnemonic or "jnb" == mnemonic or "jnc" == mnemonic:
-		if flags["CF"] == False:
-			output_string="Jump is taken (c = 0)"
-		else:
-			output_string="Jump is NOT taken (c != 0)"
-	## opcode 0x72: JB, JC, JNAE (jump if CF=1)
-	## opcode 0x0F82: JNAE, JB, JC
-	if "jb" == mnemonic or "jc" == mnemonic or "jnae" == mnemonic:
-		if flags["CF"] == True:
-			output_string="Jump is taken (c = 1)"
-		else:
-			output_string="Jump is NOT taken (c != 1)"
-	## opcode 0x76: JBE, JNA (jump if CF=1 or ZF=1)
-	## opcode 0x0F86: JBE, JNA
-	if "jbe" == mnemonic or "jna" == mnemonic:
-		if flags["CF"] == True or flags["ZF"] == 1:
-			output_string="Jump is taken (c = 1 or z = 1)"
-		else:
-			output_string="Jump is NOT taken (c != 1 or z != 1)"
-	## opcode 0xE3: JCXZ, JECXZ, JRCXZ (jump if CX=0 or ECX=0 or RCX=0)
-	# XXX: we just need cx output...
-	if "jcxz" == mnemonic or "jecxz" == mnemonic or "jrcxz" == mnemonic:
-		rcx = get_gp_register("rcx")
-		ecx = get_gp_register("ecx")
-		cx = get_gp_register("cx")
-		if ecx == 0 or cx == 0 or rcx == 0:
-			output_string="Jump is taken (cx = 0 or ecx = 0 or rcx = 0)"
-		else:
-			output_string="Jump is NOT taken (cx != 0 or ecx != 0 or rcx != 0)"
-	## opcode 0x74: JE, JZ (jump if ZF=1)
-	## opcode 0x0F84: JZ, JE, JZ (jump if ZF=1)
-	if "je" == mnemonic or "jz" == mnemonic:
-		if flags["ZF"] == 1:
-			output_string="Jump is taken (z = 1)"
-		else:
-			output_string="Jump is NOT taken (z != 1)"
-	## opcode 0x7F: JG, JNLE (jump if ZF=0 and SF=OF)
-	## opcode 0x0F8F: JNLE, JG (jump if ZF=0 and SF=OF)
-	if "jg" == mnemonic or "jnle" == mnemonic:
-		if flags["ZF"] == 0 and flags["SF"] == flags["OF"]:
-			output_string="Jump is taken (z = 0 and s = o)"
-		else:
-			output_string="Jump is NOT taken (z != 0 or s != o)"
-	## opcode 0x7D: JGE, JNL (jump if SF=OF)
-	## opcode 0x0F8D: JNL, JGE (jump if SF=OF)
-	if "jge" == mnemonic or "jnl" == mnemonic:
-		if flags["SF"] == flags["OF"]:
-			output_string="Jump is taken (s = o)"
-		else:
-			output_string="Jump is NOT taken (s != o)"
-	## opcode: 0x7C: JL, JNGE (jump if SF != OF)
-	## opcode: 0x0F8C: JNGE, JL (jump if SF != OF)
-	if "jl" == mnemonic or "jnge" == mnemonic:
-		if flags["SF"] != flags["OF"]:
-			output_string="Jump is taken (s != o)"
-		else:
-			output_string="Jump is NOT taken (s = o)"
-	## opcode 0x7E: JLE, JNG (jump if ZF = 1 or SF != OF)
-	## opcode 0x0F8E: JNG, JLE (jump if ZF = 1 or SF != OF)
-	if "jle" == mnemonic or "jng" == mnemonic:
-		if flags["ZF"] == 1 or flags["SF"] != flags["OF"]:
-			output_string="Jump is taken (z = 1 or s != o)"
-		else:
-			output_string="Jump is NOT taken (z != 1 or s = o)"
-	## opcode 0x75: JNE, JNZ (jump if ZF = 0)
-	## opcode 0x0F85: JNE, JNZ (jump if ZF = 0)
-	if "jne" == mnemonic or "jnz" == mnemonic:
-		if flags["ZF"] == 0:
-			output_string="Jump is taken (z = 0)"
-		else:
-			output_string="Jump is NOT taken (z != 0)"
-	## opcode 0x71: JNO (OF = 0)
-	## opcode 0x0F81: JNO (OF = 0)
-	if "jno" == mnemonic:
-		if flags["OF"] == 0:
-			output_string="Jump is taken (o = 0)"
-		else:
-			output_string="Jump is NOT taken (o != 0)"
-	## opcode 0x7B: JNP, JPO (jump if PF = 0)
-	## opcode 0x0F8B: JPO (jump if PF = 0)
-	if "jnp" == mnemonic or "jpo" == mnemonic:
-		if flags["PF"] == 0:
-			output_string="Jump is NOT taken (p = 0)"
-		else:
-			output_string="Jump is taken (p != 0)"
-	## opcode 0x79: JNS (jump if SF = 0)
-	## opcode 0x0F89: JNS (jump if SF = 0)
-	if "jns" == mnemonic:
-		if flags["SF"] == 0:
-			output_string="Jump is taken (s = 0)"
-		else:
-			output_string="Jump is NOT taken (s != 0)"
-	## opcode 0x70: JO (jump if OF=1)
-	## opcode 0x0F80: JO (jump if OF=1)
-	if "jo" == mnemonic:
-		if flags["OF"] == 1:
-			output_string="Jump is taken (o = 1)"
-		else:
-			output_string="Jump is NOT taken (o != 1)"
-	## opcode 0x7A: JP, JPE (jump if PF=1)
-	## opcode 0x0F8A: JP, JPE (jump if PF=1)
-	if "jp" == mnemonic or "jpe" == mnemonic:
-		if flags["PF"] == 1:
-			output_string="Jump is taken (p = 1)"
-		else:
-			output_string="Jump is NOT taken (p != 1)"
-	## opcode 0x78: JS (jump if SF=1)
-	## opcode 0x0F88: JS (jump if SF=1)
-	if "js" == mnemonic:
-		if flags["SF"] == 1:
-			output_string="Jump is taken (s = 1)"
-		else:
-			output_string="Jump is NOT taken (s != 1)"
-
-	if is_i386():
-		output(" " + output_string)
-	elif is_x64():
-		output(" "*46 + output_string)
-	else:
-		output(output_string)
-
-	color("RESET")
-
-def print_cpu_registers(register_names):
-	registers = get_gp_registers()
-	break_flag = False
-	reg_flag_val = -1
-
-	for i, register_name in enumerate(register_names):
-		reg_val = registers[register_name]
-
-		if register_name in flag_regs:
-			output("  ")
-			color("BOLD")
-			color("UNDERLINE")
-			color(COLOR_CPUFLAGS)
-			if is_arm() or is_aarch64():
-				dump_cpsr(reg_val)
-			elif is_i386() or is_x64():
-				dump_eflags(reg_val)
-			color("RESET")
-			reg_flag_val = reg_val
-		
-		else:
-
-			if (not break_flag) and (register_name in segment_regs):
-				output('\n')
-				break_flag = True
-
-
-			color(COLOR_REGNAME)
-			output("  {0:<3}: ".format(register_name.upper().ljust(3, ' ')))
-
-			try:
-
-				if register_name in ('rsp', 'esp', 'sp'):
-					color("CYAN")
-
-				elif register_name in ('rip', 'eip', 'pc'):
-					color("RED")
-
-				else:
-					if reg_val == old_register[register_name]:
-						color(get_color_status(reg_val))
-					else:
-						color(COLOR_REGVAL_MODIFIED)
-			except KeyError:
-				color(get_color_status(reg_val))
-
-			if register_name in segment_regs:
-				output("%.04X" % (reg_val))
-			else:
-				if is_x64() or is_aarch64():
-					output("0x%.016lX" % (reg_val))
-				else:
-					output("0x%.08X" % (reg_val))
-
-			old_register[register_name] = reg_val
-
-		if (not break_flag) and (i % 4 == 0) and i != 0:
-			output('\n')
-
-	if is_x64() or is_i386():
-		dump_jumpx86(reg_flag_val)
-	output("\n")
-	
-def dump_cpsr(cpsr):
-	# XXX: some fields reserved in recent ARM specs so we should revise and set to latest?
-	cpsrTuples = [ ('N', 31), ('Z', 30), ('C', 29), ('V', 28), ('Q', 27), ('J', 24), 
-				   ('E', 9), ('A', 8), ('I', 7), ('F', 6), ('T', 5) ]
-	# use the first character of each register key to output, lowercase if bit not set
-	for flag, bitfield in cpsrTuples :
-		if bool(cpsr & (1 << bitfield)) == True:
-			output(flag + " ")
-		else:
-			output(flag.lower() + " ")
-		
-def regarm():
-	color(COLOR_REGNAME)
-	output("  R0:  ")
-	r0 = get_gp_register("r0")
-	if r0 == old_arm["r0"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r0))
-	old_arm["r0"] = r0
-
-	color(COLOR_REGNAME)
-	output("  R1:  ")
-	r1 = get_gp_register("r1")
-	if r1 == old_arm["r1"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r1))
-	old_arm["r1"] = r1
-
-	color(COLOR_REGNAME)
-	output("  R2:  ")
-	r2 = get_gp_register("r2")
-	if r2 == old_arm["r2"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r2))
-	old_arm["r2"] = r2
-
-	color(COLOR_REGNAME)
-	output("  R3:  ")
-	r3 = get_gp_register("r3")
-	if r3 == old_arm["r3"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r3))
-	old_arm["r3"] = r3
-	
-	output(" ")
-	color("BOLD")
-	color("UNDERLINE")
-	color(COLOR_CPUFLAGS)
-	cpsr = get_gp_register("cpsr")
-	dump_cpsr(cpsr)
-	color("RESET")
-
-	output("\n")
-	
-	color(COLOR_REGNAME)
-	output("  R4:  ")
-	r4 = get_gp_register("r4")
-	if r4 == old_arm["r4"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r4))
-	old_arm["r4"] = r4
-
-	color(COLOR_REGNAME)
-	output("  R5:  ")
-	r5 = get_gp_register("r5")
-	if r5 == old_arm["r5"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r5))
-	old_arm["r5"] = r5
-
-	color(COLOR_REGNAME)
-	output("  R6:  ")
-	r6 = get_gp_register("r6")
-	if r6 == old_arm["r6"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r6))
-	old_arm["r6"] = r6
-
-	color(COLOR_REGNAME)
-	output("  R7:  ")
-	r7 = get_gp_register("r7")
-	if r7 == old_arm["r7"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r7))
-	old_arm["r7"] = r7
-
-	output("\n")
-
-	color(COLOR_REGNAME)
-	output("  R8:  ")
-	r8 = get_gp_register("r8")
-	if r8 == old_arm["r8"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r8))
-	old_arm["r8"] = r8
-
-	color(COLOR_REGNAME)
-	output("  R9:  ")
-	r9 = get_gp_register("r9")
-	if r9 == old_arm["r9"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r9))
-	old_arm["r9"] = r9
-
-	color(COLOR_REGNAME)
-	output("  R10: ")
-	r10 = get_gp_register("r10")
-	if r10 == old_arm["r10"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r10))
-	old_arm["r10"] = r10
-
-	color(COLOR_REGNAME)
-	output("  R11: ")
-	r11 = get_gp_register("r11")
-	if r11 == old_arm["r11"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r11))
-	old_arm["r11"] = r11
-	
-	output("\n")
-
-	color(COLOR_REGNAME)
-	output("  R12: ")
-	r12 = get_gp_register("r12")
-	if r12 == old_arm["r12"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (r12))
-	old_arm["r12"] = r12
-
-	color(COLOR_REGNAME)
-	output("  SP:  ")
-	sp = get_gp_register("sp")
-	if sp == old_arm["sp"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (sp))
-	old_arm["sp"] = sp
-
-	color(COLOR_REGNAME)
-	output("  LR:  ")
-	lr = get_gp_register("lr")
-	if lr == old_arm["lr"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (lr))
-	old_arm["lr"] = lr
-
-	color(COLOR_REGNAME)
-	output("  PC:  ")
-	pc = get_gp_register("pc")
-	if pc == old_arm["pc"]:
-		color(COLOR_REGVAL)
-	else:
-		color(COLOR_REGVAL_MODIFIED)
-	output("0x%.08X" % (pc))
-	old_arm["pc"] = pc
-	output("\n")
-
-def print_registers():
-	if is_i386(): 
-		# reg32()
-		register_format = x86_registers
-	elif is_x64():
-		# reg64()
-		register_format = x86_64_registers
-	elif is_arm():
-		# regarm()
-		register_format = arm_32_registers
-	elif is_aarch64():
-		register_format = aarch64_registers
-
-	print_cpu_registers(register_format)
 
 '''
 	si, c, r instruction override deault ones to consume their output.
@@ -4046,6 +3379,261 @@ def get_objectivec_selector(src_addr):
 # ------------------------------------------------------------
 # The heart of lldbinit - when lldb stop this is where we land 
 # ------------------------------------------------------------
+
+def print_cpu_registers(register_names):
+	registers = get_gp_registers()
+	break_flag = False
+	reg_flag_val = -1
+
+	for i, register_name in enumerate(register_names):
+		reg_val = registers[register_name]
+
+		if register_name in flag_regs:
+			output("  ")
+			color("BOLD")
+			color("UNDERLINE")
+			color(COLOR_CPUFLAGS)
+			if is_arm() or is_aarch64():
+				dump_cpsr(reg_val)
+			elif is_i386() or is_x64():
+				dump_eflags(reg_val)
+			color("RESET")
+			reg_flag_val = reg_val
+		
+		else:
+
+			if (not break_flag) and (register_name in segment_regs):
+				output('\n')
+				break_flag = True
+
+
+			color(COLOR_REGNAME)
+			output("  {0:<3}: ".format(register_name.upper().ljust(3, ' ')))
+
+			try:
+
+				if register_name in ('rsp', 'esp', 'sp'):
+					color("CYAN")
+
+				elif register_name in ('rip', 'eip', 'pc'):
+					color("RED")
+
+				else:
+					if reg_val == old_register[register_name]:
+						color(get_color_status(reg_val))
+					else:
+						color(COLOR_REGVAL_MODIFIED)
+			except KeyError:
+				color(get_color_status(reg_val))
+
+			if register_name in segment_regs:
+				output("%.04X" % (reg_val))
+			else:
+				if is_x64() or is_aarch64():
+					output("0x%.016lX" % (reg_val))
+				else:
+					output("0x%.08X" % (reg_val))
+
+			old_register[register_name] = reg_val
+
+		if (not break_flag) and (i % 4 == 0) and i != 0:
+			output('\n')
+
+	if is_x64() or is_i386():
+		dump_jumpx86(reg_flag_val)
+	output("\n")
+		
+def dump_eflags(eflags):
+	# the registers are printed by inverse order of bit field
+	# no idea where this comes from :-]
+	# masks = { "CF":0, "PF":2, "AF":4, "ZF":6, "SF":7, "TF":8, "IF":9, "DF":10, "OF":11 }
+	# printTuples = sorted(masks.items() , reverse=True, key=lambda x: x[1])
+	eflagsTuples = [('OF', 11), ('DF', 10), ('IF', 9), ('TF', 8), ('SF', 7), ('ZF', 6), ('AF', 4), ('PF', 2), ('CF', 0)]
+	# use the first character of each register key to output, lowercase if bit not set
+	for flag, bitfield in eflagsTuples :
+		if bool(eflags & (1 << bitfield)) == True:
+			output(flag[0] + " ")
+		else:
+			output(flag[0].lower() + " ")
+
+# function to dump the conditional jumps results
+def dump_jumpx86(eflags):
+	# masks and flags from https://github.com/ant4g0nist/lisa.py
+	masks = { "CF":0, "PF":2, "AF":4, "ZF":6, "SF":7, "TF":8, "IF":9, "DF":10, "OF":11 }
+	flags = { key: bool(eflags & (1 << value)) for key, value in masks.items() }
+
+	error = lldb.SBError()
+	target = get_target()
+	if is_i386():
+		pc_addr = get_gp_register("eip")
+	elif is_x64():
+		pc_addr = get_gp_register("rip")
+	else:
+		print("[-] error: wrong architecture.")
+		return
+
+	mnemonic = get_mnemonic(pc_addr)
+	color("RED")
+	output_string=""
+	## opcode 0x77: JA, JNBE (jump if CF=0 and ZF=0)
+	## opcode 0x0F87: JNBE, JA
+	if "ja" == mnemonic or "jnbe" == mnemonic:
+		if flags["CF"] == False and flags["ZF"] == False:
+			output_string="Jump is taken (c = 0 and z = 0)"
+		else:
+			output_string="Jump is NOT taken (c = 0 and z = 0)"
+	## opcode 0x73: JAE, JNB, JNC (jump if CF=0)
+	## opcode 0x0F83: JNC, JNB, JAE (jump if CF=0)
+	if "jae" == mnemonic or "jnb" == mnemonic or "jnc" == mnemonic:
+		if flags["CF"] == False:
+			output_string="Jump is taken (c = 0)"
+		else:
+			output_string="Jump is NOT taken (c != 0)"
+	## opcode 0x72: JB, JC, JNAE (jump if CF=1)
+	## opcode 0x0F82: JNAE, JB, JC
+	if "jb" == mnemonic or "jc" == mnemonic or "jnae" == mnemonic:
+		if flags["CF"] == True:
+			output_string="Jump is taken (c = 1)"
+		else:
+			output_string="Jump is NOT taken (c != 1)"
+	## opcode 0x76: JBE, JNA (jump if CF=1 or ZF=1)
+	## opcode 0x0F86: JBE, JNA
+	if "jbe" == mnemonic or "jna" == mnemonic:
+		if flags["CF"] == True or flags["ZF"] == 1:
+			output_string="Jump is taken (c = 1 or z = 1)"
+		else:
+			output_string="Jump is NOT taken (c != 1 or z != 1)"
+	## opcode 0xE3: JCXZ, JECXZ, JRCXZ (jump if CX=0 or ECX=0 or RCX=0)
+	# XXX: we just need cx output...
+	if "jcxz" == mnemonic or "jecxz" == mnemonic or "jrcxz" == mnemonic:
+		rcx = get_gp_register("rcx")
+		ecx = get_gp_register("ecx")
+		cx = get_gp_register("cx")
+		if ecx == 0 or cx == 0 or rcx == 0:
+			output_string="Jump is taken (cx = 0 or ecx = 0 or rcx = 0)"
+		else:
+			output_string="Jump is NOT taken (cx != 0 or ecx != 0 or rcx != 0)"
+	## opcode 0x74: JE, JZ (jump if ZF=1)
+	## opcode 0x0F84: JZ, JE, JZ (jump if ZF=1)
+	if "je" == mnemonic or "jz" == mnemonic:
+		if flags["ZF"] == 1:
+			output_string="Jump is taken (z = 1)"
+		else:
+			output_string="Jump is NOT taken (z != 1)"
+	## opcode 0x7F: JG, JNLE (jump if ZF=0 and SF=OF)
+	## opcode 0x0F8F: JNLE, JG (jump if ZF=0 and SF=OF)
+	if "jg" == mnemonic or "jnle" == mnemonic:
+		if flags["ZF"] == 0 and flags["SF"] == flags["OF"]:
+			output_string="Jump is taken (z = 0 and s = o)"
+		else:
+			output_string="Jump is NOT taken (z != 0 or s != o)"
+	## opcode 0x7D: JGE, JNL (jump if SF=OF)
+	## opcode 0x0F8D: JNL, JGE (jump if SF=OF)
+	if "jge" == mnemonic or "jnl" == mnemonic:
+		if flags["SF"] == flags["OF"]:
+			output_string="Jump is taken (s = o)"
+		else:
+			output_string="Jump is NOT taken (s != o)"
+	## opcode: 0x7C: JL, JNGE (jump if SF != OF)
+	## opcode: 0x0F8C: JNGE, JL (jump if SF != OF)
+	if "jl" == mnemonic or "jnge" == mnemonic:
+		if flags["SF"] != flags["OF"]:
+			output_string="Jump is taken (s != o)"
+		else:
+			output_string="Jump is NOT taken (s = o)"
+	## opcode 0x7E: JLE, JNG (jump if ZF = 1 or SF != OF)
+	## opcode 0x0F8E: JNG, JLE (jump if ZF = 1 or SF != OF)
+	if "jle" == mnemonic or "jng" == mnemonic:
+		if flags["ZF"] == 1 or flags["SF"] != flags["OF"]:
+			output_string="Jump is taken (z = 1 or s != o)"
+		else:
+			output_string="Jump is NOT taken (z != 1 or s = o)"
+	## opcode 0x75: JNE, JNZ (jump if ZF = 0)
+	## opcode 0x0F85: JNE, JNZ (jump if ZF = 0)
+	if "jne" == mnemonic or "jnz" == mnemonic:
+		if flags["ZF"] == 0:
+			output_string="Jump is taken (z = 0)"
+		else:
+			output_string="Jump is NOT taken (z != 0)"
+	## opcode 0x71: JNO (OF = 0)
+	## opcode 0x0F81: JNO (OF = 0)
+	if "jno" == mnemonic:
+		if flags["OF"] == 0:
+			output_string="Jump is taken (o = 0)"
+		else:
+			output_string="Jump is NOT taken (o != 0)"
+	## opcode 0x7B: JNP, JPO (jump if PF = 0)
+	## opcode 0x0F8B: JPO (jump if PF = 0)
+	if "jnp" == mnemonic or "jpo" == mnemonic:
+		if flags["PF"] == 0:
+			output_string="Jump is NOT taken (p = 0)"
+		else:
+			output_string="Jump is taken (p != 0)"
+	## opcode 0x79: JNS (jump if SF = 0)
+	## opcode 0x0F89: JNS (jump if SF = 0)
+	if "jns" == mnemonic:
+		if flags["SF"] == 0:
+			output_string="Jump is taken (s = 0)"
+		else:
+			output_string="Jump is NOT taken (s != 0)"
+	## opcode 0x70: JO (jump if OF=1)
+	## opcode 0x0F80: JO (jump if OF=1)
+	if "jo" == mnemonic:
+		if flags["OF"] == 1:
+			output_string="Jump is taken (o = 1)"
+		else:
+			output_string="Jump is NOT taken (o != 1)"
+	## opcode 0x7A: JP, JPE (jump if PF=1)
+	## opcode 0x0F8A: JP, JPE (jump if PF=1)
+	if "jp" == mnemonic or "jpe" == mnemonic:
+		if flags["PF"] == 1:
+			output_string="Jump is taken (p = 1)"
+		else:
+			output_string="Jump is NOT taken (p != 1)"
+	## opcode 0x78: JS (jump if SF=1)
+	## opcode 0x0F88: JS (jump if SF=1)
+	if "js" == mnemonic:
+		if flags["SF"] == 1:
+			output_string="Jump is taken (s = 1)"
+		else:
+			output_string="Jump is NOT taken (s != 1)"
+
+	if is_i386():
+		output(" " + output_string)
+	elif is_x64():
+		output(" "*46 + output_string)
+	else:
+		output(output_string)
+
+	color("RESET")
+
+def dump_cpsr(cpsr):
+	# XXX: some fields reserved in recent ARM specs so we should revise and set to latest?
+	cpsrTuples = [ ('N', 31), ('Z', 30), ('C', 29), ('V', 28), ('Q', 27), ('J', 24), 
+				   ('E', 9), ('A', 8), ('I', 7), ('F', 6), ('T', 5) ]
+	# use the first character of each register key to output, lowercase if bit not set
+	for flag, bitfield in cpsrTuples :
+		if bool(cpsr & (1 << bitfield)) == True:
+			output(flag + " ")
+		else:
+			output(flag.lower() + " ")
+
+def print_registers():
+	if is_i386(): 
+		# reg32()
+		register_format = x86_registers
+	elif is_x64():
+		# reg64()
+		register_format = x86_64_registers
+	elif is_arm():
+		# regarm()
+		register_format = arm_32_registers
+	elif is_aarch64():
+		register_format = aarch64_registers
+	else:
+		raise OSError('Unsupported Architecture')
+
+	print_cpu_registers(register_format)
 
 def HandleHookStopOnTarget(debugger, command, result, dict):
 	'''Display current code context.'''

@@ -2,7 +2,12 @@
 LLDB utils functions
 Author : peternguyen
 '''
+import lldb
 from struct import *
+
+# ----------------------------------------------------------
+# Packing and Unpacking functions
+# ----------------------------------------------------------
 
 def p32(value):
 	return pack('<I', value)
@@ -10,11 +15,237 @@ def p32(value):
 def p64(value):
 	return pack('<Q', value)
 
-def get_default_frame(debugger):
+# ----------------------------------------------------------
+# Color Related Functions
+# ----------------------------------------------------------
+
+def get_color_status(addr):
+	target = get_target()
+	process = get_process()
+	xinfo = resolve_mem_map(target, addr)
+
+	if xinfo['module_name']:
+		# address is excutable page
+		return "RED"
+
+	error = lldb.SBError()
+	process.ReadMemory(addr, 1, error)
+	if error.Success():
+		# memory is readable
+		return "CYAN"
+
+	return "WHITE"
+
+# ----------------------------------------------------------
+# Functions to extract internal and process lldb information
+# ----------------------------------------------------------
+
+def get_selected_frame(debugger):
 	process = debugger.GetSelectedTarget().GetProcess()
-	thread = process.GetThreadAtIndex(0)
-	frame = thread.GetFrameAtIndex(0)
+	thread = process.GetSelectedThread()
+	frame = thread.GetSelectedFrame()
 	return frame
+
+def get_arch():
+	return lldb.debugger.GetSelectedTarget().triple.split('-')[0]
+
+def get_frame():
+	frame = None
+	# SBProcess supports thread iteration -> SBThread
+	for thread in get_process():
+		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
+			frame = thread.GetFrameAtIndex(0)
+			break
+	# this will generate a false positive when we start the target the first time because there's no context yet.
+	if not frame:
+		print("[-] warning: get_frame() failed. Is the target binary started?")
+	return frame
+
+def get_thread():
+	thread = None
+	# SBProcess supports thread iteration -> SBThread
+	for thread in get_process():
+		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
+			thread = thread
+	
+	if not thread:
+		print("[-] warning: get_thread() failed. Is the target binary started?")
+
+	return thread
+
+def get_target():
+	target = lldb.debugger.GetSelectedTarget()
+	if not target:
+		print("[-] error: no target available. please add a target to lldb.")
+		return
+	return target
+
+def get_process():
+	# A read only property that returns an lldb object that represents the process (lldb.SBProcess) that this target owns.
+	return lldb.debugger.GetSelectedTarget().process
+
+# evaluate an expression and return the value it represents
+def evaluate(command):
+	frame = get_frame()
+	if frame:
+		value = frame.EvaluateExpression(command)
+		if value.IsValid() == False:
+			return None
+		try:
+			value = int(value.GetValue(), base=10)
+			return value
+		except Exception as e:
+			print("Exception on evaluate: " + str(e))
+			return None
+	# use the target version - if no target exists we can't do anything about it
+	else:
+		target = get_target()    
+		if target == None:
+			return None
+		value = target.EvaluateExpression(command)
+		if value.IsValid() == False:
+			return None
+		try:
+			value = int(value.GetValue(), base=10)
+			return value
+		except:
+			return None
+
+def is_i386():
+	arch = get_arch()
+	return arch[0:1] == "i"
+
+def is_x64():
+	arch = get_arch()
+	return arch.startswith("x86_64")
+
+def is_arm():
+	arch = get_arch()
+	return "arm" in arch
+
+def is_aarch64():
+	return get_arch() == 'aarch64'
+
+def get_pointer_size():
+	poisz = evaluate("sizeof(long)")
+	return poisz
+
+# from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
+def get_instance_object():
+	instanceObject = None
+	if is_i386():
+		instanceObject = '*(id*)($esp+4)'
+	elif is_x64():
+		instanceObject = '(id)$rdi'
+	# not supported yet
+	elif is_arm():
+		instanceObject = None
+  
+	return instanceObject
+
+# -------------------------
+# Register related commands
+# -------------------------
+
+# return the int value of a general purpose register
+def get_gp_register(reg_name):
+	regs = get_registers("general")
+	if regs == None:
+		return 0
+	for reg in regs:
+		if reg_name == reg.GetName():
+			#return int(reg.GetValue(), 16)
+			return reg.unsigned
+	return 0
+
+def get_gp_registers():
+	regs = get_registers("general")
+	if regs == None:
+		return 0
+	
+	registers = {}
+	for reg in regs:
+		reg_name = reg.GetName()
+		registers[reg_name] = reg.unsigned
+	return registers
+		
+def get_register(reg_name):
+	regs = get_registers("general")
+	if regs == None:
+		return "0"
+	for reg in regs:
+		if reg_name == reg.GetName():
+			return reg.GetValue()
+	return "0"
+
+def get_registers(kind):
+	"""Returns the registers given the frame and the kind of registers desired.
+
+	Returns None if there's no such kind.
+	"""
+	frame = get_frame()
+	if not frame:
+		return None
+	registerSet = frame.GetRegisters() # Return type of SBValueList.
+	for value in registerSet:
+		if kind.lower() in value.GetName().lower():
+			return value
+	return None
+
+# retrieve current instruction pointer via platform independent $pc register
+def get_current_pc():
+	frame = get_frame()
+	if not frame:
+		return 0
+
+	return frame.pc
+
+# retrieve current stack pointer via registers information
+# XXX: add ARM
+def get_current_sp():
+	if is_i386():
+		sp_addr = get_gp_register("esp")
+	elif is_x64():
+		sp_addr = get_gp_register("rsp")
+	else:
+		print("[-] error: wrong architecture.")
+		return 0
+	return sp_addr
+
+# helper function that updates given register
+def update_register(register, command):
+	help = """
+Update given register with a new value.
+
+Syntax: register_name <value>
+
+Where value can be a single value or an expression.
+"""
+
+	cmd = command.split()
+	if len(cmd) == 0:
+		print("[-] error: command requires arguments.")
+		print("")
+		print(help)
+		return
+
+	if cmd[0] == "help":
+		print(help)
+		return
+
+	value = evaluate(command)
+	if value == None:
+		print("[-] error: invalid input value.")
+		print("")
+		print(help)
+		return
+
+	# we need to format because hex() will return string with an L and that will fail to update register
+	get_frame().reg[register].value = format(value, '#x')
+
+# ----------------------------------------------------------
+# LLDB Module functions
+# ----------------------------------------------------------
 
 def find_module_by_name(target, module_name):
 	for module in target.modules:
@@ -24,16 +255,17 @@ def find_module_by_name(target, module_name):
 	return None
 
 def get_text_section(module):
-	for section in module.sections:
-		if section.GetName() == '__TEXT':
-			return section
-
-	return None
+	return module.FindSection('__TEXT')
 
 def resolve_mem_map(target, addr):
 	found = False
-	module_name = ''
-	offset = -1
+
+	xinfo = {
+		'module_name' : '',
+		'section_name' : '',
+		'perms' : 0,
+		'offset' : -1
+	}
 
 	# found in load image
 	for module in target.modules:
@@ -45,17 +277,16 @@ def resolve_mem_map(target, addr):
 			end_addr = start_addr + section.GetFileByteSize()
 
 			if start_addr <= addr <= end_addr:
-				module_name = module.file.basename
-				text_section = get_text_section(module)
-				base_addr = text_section.GetLoadAddress(target)
-				offset = addr - base_addr
-				found = True
-				break
+				xinfo['module_name'] = module.file.basename
+				xinfo['section_name'] = section.GetName()
+				xinfo['perms'] = section.GetPermissions()
 
-		if found:
-			break
+				xinfo['offset'] = addr - start_addr
+				return xinfo
 
-	return module_name, offset
+	return xinfo
+
+## String operations ##
 
 def parse_number(str_num):
 
@@ -74,6 +305,10 @@ def parse_number(str_num):
 			return -1
 
 	return str_num
+
+# ----------------------------------------------------------
+# Cyclic algorithm to find offset on memory
+# ----------------------------------------------------------
 
 def de_bruijn(charset , n = 4, maxlen = 0x10000):
 		# string cyclic function
@@ -156,3 +391,5 @@ def cyclic_find(subseq, length = 0x10000):
 		if saved == subseq: # if subseq equal saved then return pos of subseq
 			return pos
 	return -1
+
+## --------- END --------- ##
