@@ -2,6 +2,8 @@
 
 A gdbinit clone for LLDB aka how to make LLDB a bit more useful and less crappy
 
+(c) peternguyen93 (2020)
+
 (c) Deroko 2014, 2015, 2016  
 (c) fG! 2017, 2018 - reverser@put.as - https://reverse.put.as
 
@@ -17,6 +19,10 @@ Huge thanks to Deroko for his original effort! Without it this would not exist.
 
 Most of gdbinit functions are converted, and a bunch of new functions added.  
 Some of the commands that were passed to lldb command line were converted to internal API.
+
+Added `xinfo`, `tele` , `m_bp` commands.
+Bug fixed for lldb with Python3 on newest macOS.
+Support aarch64.
 
 ### Requirements
 
