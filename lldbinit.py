@@ -2185,9 +2185,15 @@ def cmd_xinfo(debugger, command, result, dict):
 
 	module_name = xinfo['module_name']
 	module_name+= '.' + xinfo['section_name']
-	offset = xinfo['offset']
+	offset = xinfo['abs_offset']
 
-	print(COLORS['YELLOW'] + '- {0} : 0x{1}'.format(module_name, offset) + COLORS['RESET'])
+	symbol_name = ''
+	sym_addr = lldb.SBAddress(address, cur_target)
+	symbol = sym_addr.GetSymbol()
+	if symbol.name:
+		symbol_name = symbol.name
+
+	print(COLORS['YELLOW'] + '- {0} : {1} ({2})'.format(module_name, hex(offset), symbol_name) + COLORS['RESET'])
 
 def cmd_telescope(debugger, command, result, dict):
 	args = command.split(' ')
@@ -3182,7 +3188,7 @@ def get_indirect_flow_target(source_address):
 			if x == None:
 				return 0
 			value = get_frame().EvaluateExpression("$" + x.group(1))
-			if value.IsValid() == False:                
+			if value.IsValid() == False:
 				return 0
 			deref_addr = int(value.GetValue(), 10)
 			if "rip" in operand:
@@ -3192,10 +3198,9 @@ def get_indirect_flow_target(source_address):
 			if x == None:
 				return 0
 			value = get_frame().EvaluateExpression("$" + x.group(1))
-			if value.IsValid() == False:                
+			if value.IsValid() == False:
 				return 0
 			deref_addr = int(value.GetValue(), 10)
-		
 		# now we can dereference and find the call target
 		if get_pointer_size() == 4:
 			call_target_addr = get_process().ReadUnsignedFromMemory(deref_addr, 4, err)
@@ -3214,7 +3219,7 @@ def get_indirect_flow_target(source_address):
 			return 0
 		#output("Result {}\n".format(x.group(1)))
 		value = get_frame().EvaluateExpression("$" + x.group(1))
-		if value.IsValid() == False:                
+		if value.IsValid() == False:
 			return 0
 		return int(value.GetValue(), 10)
 	# RIP relative calls
@@ -3246,11 +3251,7 @@ def is_sending_objc_msg():
 	call_addr = get_indirect_flow_target(get_current_pc())
 	sym_addr = lldb.SBAddress(call_addr, target)
 	symbol = sym_addr.GetSymbol()
-	# XXX: add others?
-	if symbol.name != "objc_msgSend":
-		return False
-	
-	return True
+	return symbol.name == "objc_msgSend"
 
 # XXX: x64 only
 def display_objc():
@@ -3275,7 +3276,7 @@ def display_objc():
 	selector_addr = get_gp_register("rsi")
 
 	membuff = get_process().ReadMemory(selector_addr, 0x100, err)
-	strings = membuff.split('\00')
+	strings = membuff.split(b'\x00')
 	if len(strings) != 0:
 		color("RED")
 		output('Class: ')
@@ -3284,7 +3285,7 @@ def display_objc():
 		color("RED")
 		output(' Selector: ')
 		color("RESET")
-		output(strings[0])
+		output(strings[0].decode('utf-8'))
 
 def display_indirect_flow():
 	target = get_target()

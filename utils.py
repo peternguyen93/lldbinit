@@ -140,7 +140,6 @@ def get_instance_object():
 	# not supported yet
 	elif is_arm():
 		instanceObject = None
-  
 	return instanceObject
 
 # -------------------------
@@ -264,25 +263,28 @@ def resolve_mem_map(target, addr):
 		'module_name' : '',
 		'section_name' : '',
 		'perms' : 0,
-		'offset' : -1
+		'offset' : -1,
+		'abs_offset' : -1
 	}
 
 	# found in load image
 	for module in target.modules:
+		absolute_offset = 0
 		for section in module.sections:
 			if section.GetLoadAddress(target) == 0xffffffffffffffff:
 				continue
 
 			start_addr = section.GetLoadAddress(target)
 			end_addr = start_addr + section.GetFileByteSize()
-
 			if start_addr <= addr <= end_addr:
 				xinfo['module_name'] = module.file.basename
 				xinfo['section_name'] = section.GetName()
 				xinfo['perms'] = section.GetPermissions()
-
 				xinfo['offset'] = addr - start_addr
+				xinfo['abs_offset'] = absolute_offset + xinfo['offset']
 				return xinfo
+
+			absolute_offset += section.GetFileByteSize()
 
 	return xinfo
 
