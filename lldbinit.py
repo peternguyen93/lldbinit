@@ -433,7 +433,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 	[ "arm32/arm64/armthumb", "ARM assembler using keystone" ],
 	[ 'tele', 'view memory page'],
 	[ 'xinfo', 'find address belong to image'],
-	[ 'pattern_create', 'create cyclic string']
+	[ 'pattern_create', 'create cyclic string'],
 	[ 'pattern_offset', 'find offset in cyclic string']
 	]
 
@@ -3364,15 +3364,18 @@ def get_objectivec_selector(src_addr):
 	classname_value = get_frame().EvaluateExpression(classname_command)
 	if classname_value.IsValid() == False:
 		return ""
-	
-	className = classname_value.GetSummary().strip('"')
-	selector_addr = get_gp_register("rsi")
-	membuf = get_process().ReadMemory(selector_addr, 0x100, err)
-	strings = membuf.split(b'\00')
-	if len(strings) != 0:
-		return "[" + className + " " + strings[0].decode('utf-8') + "]"
-	else:
-		return "[" + className + "]"
+		
+	className_summary = classname_value.GetSummary()
+	if className_summary:
+		# className_summary must be not None 
+		className = className_summary.strip('"')
+		selector_addr = get_gp_register("rsi")
+		membuf = get_process().ReadMemory(selector_addr, 0x100, err)
+		strings = membuf.split(b'\00')
+		if len(strings) != 0:
+			return "[" + className + " " + strings[0].decode('utf-8') + "]"
+		else:
+			return "[" + className + "]"
 	
 	return ""
 
