@@ -20,9 +20,10 @@ Huge thanks to Deroko for his original effort! Without it this would not exist.
 Most of gdbinit functions are converted, and a bunch of new functions added.  
 Some of the commands that were passed to lldb command line were converted to internal API.
 
-Added `xinfo`, `tele` , `m_bp` commands.
+Added `xinfo`, `tele` , `mbp`, `vmmap` commands.
 Bug fixed for lldb with Python3 on newest macOS.
 Support aarch64.
+Improve better color for determinte region of an address
 
 ### Requirements
 
