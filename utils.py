@@ -3,7 +3,10 @@ LLDB utils functions
 Author : peternguyen
 '''
 import lldb
+import re
+from subprocess import Popen, PIPE
 from struct import *
+import platform
 
 # ----------------------------------------------------------
 # Packing and Unpacking functions
@@ -24,9 +27,11 @@ def get_color_status(addr):
 	process = get_process()
 	xinfo = resolve_mem_map(target, addr)
 
-	if xinfo['module_name']:
+	if xinfo['section_name'] == '__TEXT':
 		# address is excutable page
 		return "RED"
+	elif xinfo['section_name'] == '__DATA':
+		return "MAGENTA"
 
 	error = lldb.SBError()
 	process.ReadMemory(addr, 1, error)
@@ -77,12 +82,12 @@ def get_target():
 	target = lldb.debugger.GetSelectedTarget()
 	if not target:
 		print("[-] error: no target available. please add a target to lldb.")
-		return
+		return None
 	return target
 
 def get_process():
 	# A read only property that returns an lldb object that represents the process (lldb.SBProcess) that this target owns.
-	return lldb.debugger.GetSelectedTarget().process
+	return get_target().process
 
 # evaluate an expression and return the value it represents
 def evaluate(command):
@@ -308,6 +313,104 @@ def parse_number(str_num):
 
 	return str_num
 
+def get_vmmap_info():
+	if platform.system() != 'Darwin':
+		print('[!] This feature only support on macOS')
+		return ''
+
+	process = get_process()
+	if not process:
+		return ''
+
+	process_info = process.GetProcessInfo()
+	if not process_info.IsValid():
+		return ''
+
+	cmd = ['vmmap', str(process_info.GetProcessID())]
+	proc = Popen(cmd, stdout = PIPE)
+	out, err = proc.communicate()
+
+	return out.decode('utf-8')
+
+vmmap_caches = []
+
+def query_vmmap(address):
+	global vmmap_caches
+
+	if platform.system() != 'Darwin':
+		print('[!] This feature only support on macOS')
+		return None
+
+	for map_info in vmmap_caches:
+		if map_info['start'] <= address < map_info['end']:
+			return map_info
+
+	process = get_process()
+	process_info = process.GetProcessInfo()
+	if not process_info.IsValid():
+		return None
+
+	cmd = ['vmmap', str(process_info.GetProcessID()), hex(address)]
+	proc = Popen(cmd, stdout = PIPE)
+	out, err = proc.communicate()
+	out = out.decode('utf-8')
+
+	m = re.search(
+		r'\-\-\->\s+(\w+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9K\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)', out)
+	if not m:
+		return None
+
+	map_info = {
+		'type' : m[1],
+		'start': int(m[2], 16),
+		'end' : int(m[3], 16),
+		'perm' : m[4],
+		'shm' : m[5],
+		'region' : m[6]
+	}
+
+	vmmap_caches.append(map_info)	
+
+	return map_info
+
+# ----------------------------------------------------------
+# Memory Read/Write Support
+# ----------------------------------------------------------
+
+def read_mem(addr, size):
+	err = lldb.SBError()
+	process = get_process()
+
+	mem_data = process.ReadMemory(addr, size, err)
+	if not err.Success():
+		mem_data = b''
+
+	return mem_data
+
+def write_mem(addr, data):
+	err = lldb.SBError()
+	process = get_process()
+
+	sz_write = process.WriteMemory(addr, data, err)
+	if not err.Success():
+		sz_write = 0
+
+	return sz_write
+
+def try_read_mem(addr, size):
+	err = lldb.SBError()
+	process = get_process()
+	mem_data = b''
+
+	while size != 0:
+		mem_data = process.ReadMemory(addr, size, err)
+		if err.Success():
+			break
+
+		size -= 1
+
+	return mem_data
+
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory
 # ----------------------------------------------------------
@@ -393,5 +496,33 @@ def cyclic_find(subseq, length = 0x10000):
 		if saved == subseq: # if subseq equal saved then return pos of subseq
 			return pos
 	return -1
+
+def hexdump(addr, chars, sep, width, lines=5):
+	l = []
+	line_count = 0
+	while chars:
+		if line_count >= lines:
+			break
+		line = chars[:width]
+		chars = chars[width:]
+		line = line.ljust( width, '\000' )
+		arch = get_arch()
+		if get_pointer_size() == 4:
+			szaddr = "0x%.08X" % addr
+		else:
+			szaddr = "0x%.016lX" % addr
+		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
+		addr += 0x10
+		line_count = line_count + 1
+	return "\n".join(l)
+
+def quotechars( chars ):
+	data = ""
+	for x in bytearray(chars):
+		if x >= 0x20 and x <= 126:
+			data += chr(x)
+		else:       
+			data += "."
+	return data
 
 ## --------- END --------- ##

@@ -84,6 +84,8 @@ import  argparse
 import  subprocess
 import  tempfile
 from struct import *
+
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
 
 try:
@@ -264,6 +266,7 @@ def __lldb_init_module(debugger, internal_dict):
 	#
 	ci.HandleCommand("command script add -f lldbinit.cmd_xinfo xinfo", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_telescope tele", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vmmap vmmap", res)
 	#
 	# Exploitation Helper commands
 	#
@@ -626,8 +629,12 @@ def output(x):
 # create breakpoint base on module name and offset
 def cmd_m_bp(debugger, command, result, _dict):
 	args = command.split(' ')
+	if len(args) < 2:
+		print('mbp <module_name> <offset>')
+		return
+
 	module_name = args[0]
-	offset = args[1]
+	offset = evaluate(args[1])
 
 	cur_target = debugger.GetSelectedTarget()
 	target_module = find_module_by_name(cur_target, module_name)
@@ -635,13 +642,8 @@ def cmd_m_bp(debugger, command, result, _dict):
 		result.PutCString(f'Module {module_name} is not found')
 		return
 
-	offset = parse_number(offset)
-	if offset == -1:
-		result.PutCString('offset must be int or hex')
-		return
-
 	cur_target = debugger.GetSelectedTarget()
-	text_section = target_module.GetSectionAtIndex(0)
+	text_section = get_text_section(target_module)
 	base_addr = text_section.GetLoadAddress(cur_target)
 	target_addr = base_addr + offset
 
@@ -1636,18 +1638,12 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	err = lldb.SBError()
-	size = 0x100
-	while size != 0:
-		membuff = get_process().ReadMemory(dump_addr, size, err)
-		if err.Success() == False and size == 0:
-			output(str(err))
-			result.PutCString("".join(GlobalListOutput))
-			return
-		if err.Success() == True:
-			break
-		size = size - 1
-	membuff = membuff + b"\x00" * (0x100-size) 
+	membuff = try_read_mem(dump_addr, 0x100)
+	if not membuff:
+		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
+		return
+	membuff = membuff.ljust(0x100, b'\x00')
+
 	color("BLUE")
 	if get_pointer_size() == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
@@ -1736,18 +1732,11 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	err = lldb.SBError()
-	size = 0x100
-	while size != 0:
-		membuff = get_process().ReadMemory(dump_addr, size, err)
-		if err.Success() == False and size == 0:
-			output(str(err))
-			result.PutCString("".join(GlobalListOutput))
-			return
-		if err.Success() == True:
-			break
-		size = size - 2
-	membuff = membuff + b"\x00" * (0x100-size)
+	membuff = try_read_mem(dump_addr, 0x100)
+	if not membuff:
+		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
+		return
+	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
 	if get_pointer_size() == 4: #is_i386() or is_arm():
@@ -1823,18 +1812,12 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	err = lldb.SBError()
-	size = 0x100
-	while size != 0:    
-		membuff = get_process().ReadMemory(dump_addr, size, err)
-		if err.Success() == False and size == 0:
-			output(str(err))
-			result.PutCString("".join(GlobalListOutput))
-			return
-		if err.Success() == True:
-			break
-		size = size - 4
-	membuff = membuff + bytes(0x100-size)
+	membuff = try_read_mem(dump_addr, 0x100)
+	if not membuff:
+		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
+		return
+	membuff = membuff.ljust(0x100, b'\x00')
+
 	color("BLUE")
 	if get_pointer_size() == 4: #is_i386() or is_arm():
 		output("[0x0000:0x%.08X]" % dump_addr)
@@ -1905,22 +1888,12 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	err = lldb.SBError()
-	size = 0x100
-	while size != 0:
-		membuff = get_process().ReadMemory(dump_addr, size, err)
-		if err.Success() == False and size == 0:
-			output(str(err))
-			result.PutCString("".join(GlobalListOutput))
-			return
-		if err.Success() == True:
-			break
-		size = size - 8
-	membuff = membuff + b"\x00" * (0x100-size)
-	if err.Success() == False:
-		output(str(err))
-		result.PutCString("".join(GlobalListOutput))
+	membuff = try_read_mem(dump_addr, 0x100)
+	if not membuff:
+		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
+
+	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
 	if get_pointer_size() == 4:
@@ -1948,34 +1921,6 @@ Note: expressions supported, do not use spaces between operators.
 	color("RESET")
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
-
-def hexdump(addr, chars, sep, width, lines=5):
-	l = []
-	line_count = 0
-	while chars:
-		if line_count >= lines:
-			break
-		line = chars[:width]
-		chars = chars[width:]
-		line = line.ljust( width, '\000' )
-		arch = get_arch()
-		if get_pointer_size() == 4:
-			szaddr = "0x%.08X" % addr
-		else:
-			szaddr = "0x%.016lX" % addr
-		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
-		addr += 0x10
-		line_count = line_count + 1
-	return "\n".join(l)
-
-def quotechars( chars ):
-	data = ""
-	for x in bytearray(chars):
-		if x >= 0x20 and x <= 126:
-			data += chr(x)
-		else:       
-			data += "."
-	return data
 
 # XXX: help
 def cmd_findmem(debugger, command, result, dict):
@@ -2180,12 +2125,18 @@ def cmd_xinfo(debugger, command, result, dict):
 	cur_target = debugger.GetSelectedTarget()
 	xinfo = resolve_mem_map(cur_target, address)
 	if not xinfo['module_name']:
-		print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
-		return
+		map_info = query_vmmap(address)
+		if not map_info:
+			print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
+			return
 
-	module_name = xinfo['module_name']
-	module_name+= '.' + xinfo['section_name']
-	offset = xinfo['abs_offset']
+		module_name = map_info['type']
+		offset = address - map_info['start']
+
+	else:
+		module_name = xinfo['module_name']
+		module_name+= '.' + xinfo['section_name']
+		offset = xinfo['abs_offset']
 
 	symbol_name = ''
 	sym_addr = lldb.SBAddress(address, cur_target)
@@ -2204,6 +2155,11 @@ def cmd_telescope(debugger, command, result, dict):
 
 	address = evaluate(args[0])
 	length = evaluate(args[1])
+
+	print(COLORS['RED'] + 'CODE' + COLORS['RESET'] + ' | ', end='')
+	print(COLORS['YELLOW'] + 'STACK' + COLORS['RESET'] + ' | ', end='')
+	print(COLORS['CYAN'] + 'HEAP' + COLORS['RESET'] + ' | ', end='')
+	print(COLORS['MAGENTA'] + 'DATA' + COLORS['RESET'])
 
 	cur_target = debugger.GetSelectedTarget()
 	process = debugger.GetSelectedTarget().GetProcess()
@@ -2226,22 +2182,80 @@ def cmd_telescope(debugger, command, result, dict):
 				module_name+= '.' + xinfo['section_name']
 
 				if offset > -1:
-					print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
-							COLORS['RED'], hex(ptr_value), COLORS['RESET'],
-							COLORS['YELLOW'], module_name, hex(offset), COLORS['RESET']
-						))
+					if xinfo['section_name'] == '__TEXT':
+						# this address is executable
+						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
+								COLORS['RED'], hex(ptr_value), COLORS['RESET'],
+								COLORS['BOLD'], module_name, hex(offset), COLORS['RESET']
+							))
+					else:
+						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
+								COLORS['MAGENTA'], hex(ptr_value), COLORS['RESET'],
+								COLORS['BOLD'], module_name, hex(xinfo['abs_offset']), COLORS['RESET']
+							))
 				else:
 					error_ref2 = lldb.SBError()
 					process.ReadMemory(ptr_value, 1, error_ref2)
 
 					if error_ref2.Success():
-						# ptr_value is readable may be on heap or stack
-						# print(f'{CYAN}{hex(ptr_value)}{RESET}')
-						print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
+						# check this address is on heap or stack or mapped address
+						map_info = query_vmmap(ptr_value)
+						if map_info == None:
+							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
+						else:
+							if map_info['type'].startswith('Stack'):
+								# is stack address
+								print('{0}{1}{2}'.format(COLORS['YELLOW'], hex(ptr_value), COLORS['RESET']))
+							elif map_info['type'].startswith('MALLOC'):
+								# heap
+								print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
+							else:
+								# mapped address
+								print('{0}{1}{2}'.format(COLORS['MAGENTA'], hex(ptr_value), COLORS['RESET']))
 					else:
 						print(hex(ptr_value))
 			else:
 				print(hex(ptr_value))
+
+def cmd_vmmap(debugger, command, result, _dict):
+	'''
+		vmmap like in Linux
+	'''
+	addr = evaluate(command)
+	if addr == None:
+		# add color or sth like in this text
+		print(get_vmmap_info())
+		return
+
+	map_info = query_vmmap(addr)
+	if not map_info:
+		print('[-] Unable to find your address {0}'.format(hex(addr)))
+		return
+
+	if map_info['type'].startswith('Stack'):
+		print(COLORS['YELLOW'], end='')
+	elif map_info['type'].startswith('MALLOC'):
+		print(COLORS['CYAN'], end='')
+	elif map_info['type'].startswith('__TEXT'):
+		print(COLORS['RED'], end='')
+	elif map_info['type'].startswith('__DATA'):
+		print(COLORS['MAGENTA'], end='')
+
+	perm = map_info['perm'].split('/')
+	if 'x' in perm[0]:
+		print(COLORS['RED'], end='')
+
+	print(map_info['type'] + ' [', end='')
+
+	if get_pointer_size() == 4:
+		print("0x%.08X - 0x%.08X" % (map_info['start'], map_info['end']), end='')
+	else:
+		print("0x%.016lX - 0x%.016lX" % (map_info['start'], map_info['end']), end='')
+
+	print(') - ', end='')
+	print(map_info['perm'], end='')
+	print(' {0} {1}'.format(map_info['shm'], map_info['region']), end='')
+	print(COLORS['RESET'])
 
 def cmd_pattern_create(debugger, command, result, _dict):
 	pattern_length = parse_number(command) 
@@ -3417,7 +3431,7 @@ def print_cpu_registers(register_names):
 			try:
 
 				if register_name in ('rsp', 'esp', 'sp'):
-					color("CYAN")
+					color("BLUE")
 
 				elif register_name in ('rip', 'eip', 'pc'):
 					color("RED")
@@ -3679,7 +3693,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		#this is for ARM probably in the future... when I will need it...
 		print("[-] error: Unknown architecture : " + arch)
 		return
-	
+
 	color(COLOR_SEPARATOR)
 	if is_i386() or is_arm():
 		output("---------------------------------------------------------------------------------")
