@@ -2130,8 +2130,8 @@ def cmd_xinfo(debugger, command, result, dict):
 			print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
 			return
 
-		module_name = map_info['type']
-		offset = address - map_info['start']
+		module_name = map_info.type
+		offset = address - map_info.start
 
 	else:
 		module_name = xinfo['module_name']
@@ -2203,10 +2203,10 @@ def cmd_telescope(debugger, command, result, dict):
 						if map_info == None:
 							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
 						else:
-							if map_info['type'].startswith('Stack'):
+							if map_info.type.startswith('Stack'):
 								# is stack address
 								print('{0}{1}{2}'.format(COLORS['YELLOW'], hex(ptr_value), COLORS['RESET']))
-							elif map_info['type'].startswith('MALLOC'):
+							elif map_info.type.startswith('MALLOC'):
 								# heap
 								print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
 							else:
@@ -2217,6 +2217,33 @@ def cmd_telescope(debugger, command, result, dict):
 			else:
 				print(hex(ptr_value))
 
+def display_map_info(map_info):
+	perm = map_info.perm.split('/')
+	if 'x' in perm[0]:
+		print(COLORS['RED'], end='')
+	elif 'rw' in perm[0]:
+		print(COLORS['MAGENTA'], end='')
+	elif map_info.type.startswith('Stack'):
+		print(COLORS['YELLOW'], end='')
+	elif map_info.type.startswith('MALLOC'):
+		print(COLORS['CYAN'], end='')
+	elif map_info.type.startswith('__TEXT'):
+		print(COLORS['RED'], end='')
+	elif map_info.type.startswith('__DATA'):
+		print(COLORS['MAGENTA'], end='')
+	
+	print(map_info.type + ' [', end='')
+
+	if get_pointer_size() == 4:
+		print("0x%.08X - 0x%.08X" % (map_info.start, map_info.end), end='')
+	else:
+		print("0x%.016lX - 0x%.016lX" % (map_info.start, map_info.end), end='')
+
+	print(') - ', end='')
+	print(map_info.perm, end='')
+	print(' {0} {1}'.format(map_info.shm, map_info.region), end='')
+	print(COLORS['RESET'])
+
 def cmd_vmmap(debugger, command, result, _dict):
 	'''
 		vmmap like in Linux
@@ -2224,7 +2251,11 @@ def cmd_vmmap(debugger, command, result, _dict):
 	addr = evaluate(command)
 	if addr == None:
 		# add color or sth like in this text
-		print(get_vmmap_info())
+		map_infos = parse_vmmap_info()
+
+		for map_info in map_infos:
+			display_map_info(map_info)
+
 		return
 
 	map_info = query_vmmap(addr)
@@ -2232,30 +2263,7 @@ def cmd_vmmap(debugger, command, result, _dict):
 		print('[-] Unable to find your address {0}'.format(hex(addr)))
 		return
 
-	if map_info['type'].startswith('Stack'):
-		print(COLORS['YELLOW'], end='')
-	elif map_info['type'].startswith('MALLOC'):
-		print(COLORS['CYAN'], end='')
-	elif map_info['type'].startswith('__TEXT'):
-		print(COLORS['RED'], end='')
-	elif map_info['type'].startswith('__DATA'):
-		print(COLORS['MAGENTA'], end='')
-
-	perm = map_info['perm'].split('/')
-	if 'x' in perm[0]:
-		print(COLORS['RED'], end='')
-
-	print(map_info['type'] + ' [', end='')
-
-	if get_pointer_size() == 4:
-		print("0x%.08X - 0x%.08X" % (map_info['start'], map_info['end']), end='')
-	else:
-		print("0x%.016lX - 0x%.016lX" % (map_info['start'], map_info['end']), end='')
-
-	print(') - ', end='')
-	print(map_info['perm'], end='')
-	print(' {0} {1}'.format(map_info['shm'], map_info['region']), end='')
-	print(COLORS['RESET'])
+	display_map_info(map_info)
 
 def cmd_pattern_create(debugger, command, result, _dict):
 	pattern_length = parse_number(command) 

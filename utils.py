@@ -313,6 +313,44 @@ def parse_number(str_num):
 
 	return str_num
 
+vmmap_caches = []
+
+class MapInfo(object):
+	def __init__(self, _type, start, end, perm, shm, region):
+		self.type  = _type
+		self.start = start
+		self.end   = end
+		self.perm  = perm
+		self.shm   = shm
+		self.region= region
+
+	def __hash__(self):
+		s = self.type
+		s+= str(self.start)
+		s+= str(self.end)
+		s+= self.perm
+		s+= self.shm
+		s+= self.region
+		return hash(s)
+
+	def __eq__(self, other):
+		return hash(self) == hash(other)
+
+	def __ne__(self, other):
+		return hash(self) != hash(other)
+
+	def __lt__(self, other):
+		return hash(self) < hash(other)
+
+	def __le__(self, other):
+		return hash(self) <= hash(other)
+
+	def __gt__(self, other):
+		return hash(self) > hash(other)
+
+	def __ge__(self, other):
+		return hash(self) >= hash(other)
+
 def get_vmmap_info():
 	if platform.system() != 'Darwin':
 		print('[!] This feature only support on macOS')
@@ -332,7 +370,29 @@ def get_vmmap_info():
 
 	return out.decode('utf-8')
 
-vmmap_caches = []
+def parse_vmmap_info():
+	vmmap_info = get_vmmap_info()
+
+	if not vmmap_info:
+		return
+
+	match_map = re.findall(
+		r'(\w+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)',
+		vmmap_info
+	)
+
+	if not match_map:
+		print('[-] Vmmap parse error')
+		print(vmmap_info)
+		return
+
+	for m in match_map:
+		o_map_info = MapInfo(m[0], int(m[1], 16), int(m[2], 16), m[3], m[4], m[5])
+		if o_map_info not in vmmap_caches:
+			# add to caches
+			vmmap_caches.append(o_map_info)
+
+	return vmmap_caches
 
 def query_vmmap(address):
 	global vmmap_caches
@@ -342,7 +402,7 @@ def query_vmmap(address):
 		return None
 
 	for map_info in vmmap_caches:
-		if map_info['start'] <= address < map_info['end']:
+		if map_info.start <= address < map_info.end:
 			return map_info
 
 	process = get_process()
@@ -356,20 +416,14 @@ def query_vmmap(address):
 	out = out.decode('utf-8')
 
 	m = re.search(
-		r'\-\-\->\s+(\w+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9K\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)', out)
+		r'\-\-\->\s+(\w+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)', out)
 	if not m:
 		return None
 
-	map_info = {
-		'type' : m[1],
-		'start': int(m[2], 16),
-		'end' : int(m[3], 16),
-		'perm' : m[4],
-		'shm' : m[5],
-		'region' : m[6]
-	}
-
-	vmmap_caches.append(map_info)	
+	map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
+	if map_info not in vmmap_caches:
+		# save this query map into caches
+		vmmap_caches.append(map_info)
 
 	return map_info
 
