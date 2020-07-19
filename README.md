@@ -60,6 +60,8 @@ There are some user configurable options on the header. You can also use the ena
 
 The flow window shows the destination of calls, jmps, and returns, and also the class and selectors for Objective-C calls.
 
+![vmmap, tele](images/im3.png)
+
 ![indirect jmp](images/jmprax.png)
 
 ----
