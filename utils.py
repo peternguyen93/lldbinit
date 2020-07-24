@@ -126,10 +126,11 @@ def is_x64():
 
 def is_arm():
 	arch = get_arch()
-	return ("arm" in arch and arch != "arm64")
+	return arch == "armv7"
 
 def is_aarch64():
-	return (get_arch() == 'aarch64' or get_arch() == 'arm64'
+	arch = get_arch()
+	return arch == 'aarch64' or arch.startswith('arm64')
 
 def get_pointer_size():
 	poisz = evaluate("sizeof(long)")
