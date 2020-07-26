@@ -639,7 +639,7 @@ def cmd_m_bp(debugger, command, result, _dict):
 	cur_target = debugger.GetSelectedTarget()
 	target_module = find_module_by_name(cur_target, module_name)
 	if not target_module:
-		result.PutCString(f'Module {module_name} is not found')
+		result.PutCString('Module {0} is not found'.format(module_name))
 		return
 
 	cur_target = debugger.GetSelectedTarget()
@@ -731,83 +731,15 @@ def cmd_bht(debugger, command, result, dict):
 # clear breakpoint number
 def cmd_bpc(debugger, command, result, dict):
 	'''Clear a breakpoint. Use \'bpc help\' for more information.'''
-	help = """
-Clear a breakpoint.
-
-Syntax: bpc <breakpoint_number>
-
-Note: only breakpoint numbers are valid, not addresses. Use \'bpl\' to list breakpoints.
-Note: expressions supported, do not use spaces between operators.
-"""
-		
-	cmd = command.split()
-	if len(cmd) != 1:
-		print("[-] error: please insert a breakpoint number.")
-		print("")
-		print(help)
-		return
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	# breakpoint disable only accepts breakpoint numbers not addresses
-	value = evaluate(cmd[0])
-	if value == None:
-		print("[-] error: invalid input value - only a breakpoint number is valid.")
-		print("")
-		print(help)
-		return
-	
-	target = get_target()
-
-	for bpt in target.breakpoint_iter():
-		if bpt.id == value:
-			if target.BreakpointDelete(bpt.id) == False:
-				print("[-] error: failed to delete breakpoint #{:d}".format(value))
-				return
-			print("[+] Deleted breakpoint #{:d}".format(value))
-			return
-
-	print("[-] error: breakpoint #{:d} not found".format(value))
-	return
+	res = lldb.SBCommandReturnObject()
+	lldb.debugger.GetCommandInterpreter().HandleCommand("breakpoint delete " + command, res)
+	print(res.GetOutput())
 
 # disable breakpoint number
-# XXX: we could support addresses, not sure it's worth the trouble
 def cmd_bpd(debugger, command, result, dict):
-	'''Disable a breakpoint. Use \'bpd help\' for more information.'''
-	help = """
-Disable a breakpoint.
-
-Syntax: bpd <breakpoint_number>
-
-Note: only breakpoint numbers are valid, not addresses. Use \'bpl\' to list breakpoints.
-Note: expressions supported, do not use spaces between operators.
-"""
-		
-	cmd = command.split()
-	if len(cmd) != 1:
-		print("[-] error: please insert a breakpoint number.")
-		print("")
-		print(help)
-		return
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	# breakpoint disable only accepts breakpoint numbers not addresses
-	value = evaluate(cmd[0])
-	if value == None:
-		print("[-] error: invalid input value - only a breakpoint number is valid.")
-		print("")
-		print(help)
-		return
-	
-	target = get_target()
-
-	for bpt in target.breakpoint_iter():
-		if bpt.id == value and bpt.IsEnabled() == True:
-			bpt.SetEnabled(False)
-			print("[+] Disabled breakpoint #{:d}".format(value))
+	res = lldb.SBCommandReturnObject()
+	lldb.debugger.GetCommandInterpreter().HandleCommand("breakpoint disable " + command, res)
+	print(res.GetOutput())
 
 # disable all breakpoints
 def cmd_bpda(debugger, command, result, dict):
@@ -837,40 +769,9 @@ Syntax: bpda
 
 # enable breakpoint number
 def cmd_bpe(debugger, command, result, dict):
-	'''Enable a breakpoint. Use \'bpe help\' for more information.'''
-	help = """
-Enable a breakpoint.
-
-Syntax: bpe <breakpoint_number>
-
-Note: only breakpoint numbers are valid, not addresses. Use \'bpl\' to list breakpoints.
-Note: expressions supported, do not use spaces between operators.
-"""
-		
-	cmd = command.split()
-	if len(cmd) != 1:
-		print("[-] error: please insert a breakpoint number.")
-		print("")
-		print(help)
-		return
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	# breakpoint enable only accepts breakpoint numbers not addresses
-	value = evaluate(cmd[0])
-	if value == None:
-		print("[-] error: invalid input value - only a breakpoint number is valid.")
-		print("")
-		print(help)
-		return
-	
-	target = get_target()
-
-	for bpt in target.breakpoint_iter():
-		if bpt.id == value and bpt.IsEnabled() == False:
-			bpt.SetEnabled(True)
-			print("[+] Enabled breakpoint #{:d}".format(value))
+	res = lldb.SBCommandReturnObject()
+	lldb.debugger.GetCommandInterpreter().HandleCommand("breakpoint enable " + command, res)
+	print(res.GetOutput())
 
 # enable all breakpoints
 def cmd_bpea(debugger, command, result, dict):
@@ -897,6 +798,37 @@ Syntax: bpea
 		print("[-] error: failed to enable all breakpoints.")
 
 	print("[+] Enabled all breakpoints.")
+
+# Temporarily breakpoint next instruction - this is useful to skip loops (don't want to use stepo for this purpose)
+def cmd_bpn(debugger, command, result, dict):
+	'''Temporarily breakpoint instruction at next address. Use \'bpn help\' for more information.'''
+	help = """
+Temporarily breakpoint instruction at next address
+
+Syntax: bpn
+
+Note: control flow is not respected, it breakpoints next instruction in memory.
+"""
+
+	cmd = command.split()
+	if len(cmd) != 0:
+		if cmd[0] == "help":
+		   print(help)
+		   return
+		print("[-] error: command doesn't take any arguments.")
+		print("")
+		print(help)
+		return
+
+	target = get_target()
+	start_addr = get_current_pc()
+	next_addr = start_addr + get_inst_size(start_addr)
+	
+	breakpoint = target.BreakpointCreateByAddress(next_addr)
+	breakpoint.SetOneShot(True)
+	breakpoint.SetThreadID(get_frame().GetThread().GetThreadID())
+
+	print("[+] Set temporary breakpoint at 0x{:x}".format(next_addr))
 
 # skip current instruction - just advances PC to next instruction but doesn't execute it
 def cmd_skip(debugger, command, result, dict):
@@ -1341,37 +1273,6 @@ def cmd_LoadBreakPoints(debugger, command, result, dict):
 			break
 		debugger.HandleCommand("breakpoint set --name " + line)
 	f.close()
-
-# Temporarily breakpoint next instruction - this is useful to skip loops (don't want to use stepo for this purpose)
-def cmd_bpn(debugger, command, result, dict):
-	'''Temporarily breakpoint instruction at next address. Use \'bpn help\' for more information.'''
-	help = """
-Temporarily breakpoint instruction at next address
-
-Syntax: bpn
-
-Note: control flow is not respected, it breakpoints next instruction in memory.
-"""
-
-	cmd = command.split()
-	if len(cmd) != 0:
-		if cmd[0] == "help":
-		   print(help)
-		   return
-		print("[-] error: command doesn't take any arguments.")
-		print("")
-		print(help)
-		return
-
-	target = get_target()
-	start_addr = get_current_pc()
-	next_addr = start_addr + get_inst_size(start_addr)
-	
-	breakpoint = target.BreakpointCreateByAddress(next_addr)
-	breakpoint.SetOneShot(True)
-	breakpoint.SetThreadID(get_frame().GetThread().GetThreadID())
-
-	print("[+] Set temporary breakpoint at 0x{:x}".format(next_addr))
 
 # command that sets rax to 1 or 0 and returns right away from current function
 # technically just a shortcut to "thread return"
