@@ -3313,7 +3313,16 @@ def print_cpu_registers(register_names):
 	reg_flag_val = -1
 
 	for i, register_name in enumerate(register_names):
-		reg_val = registers[register_name]
+		try:
+			reg_val = registers[register_name]
+		except KeyError:
+			if is_aarch64():
+				if register_name == 'x29':
+					register_name = 'fp'
+					reg_val = registers['fp']
+				elif register_name == 'x30':
+					register_name == 'lr':
+					reg_val = registers['lr']
 
 		if register_name in flag_regs:
 			output("  ")
