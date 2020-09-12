@@ -3321,7 +3321,7 @@ def print_cpu_registers(register_names):
 					register_name = 'fp'
 					reg_val = registers['fp']
 				elif register_name == 'x30':
-					register_name == 'lr':
+					register_name == 'lr'
 					reg_val = registers['lr']
 
 		if register_name in flag_regs:
