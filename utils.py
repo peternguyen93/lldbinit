@@ -4,7 +4,7 @@ Author : peternguyen
 '''
 import lldb
 import re
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, check_call
 from pathlib import Path
 from struct import *
 import platform
@@ -646,19 +646,28 @@ def get_all_running_vm():
 	return vms
 
 def take_vm_snapshot(target_vm, snapshot_name):
-	proc = Popen(['vmrun', 'snapshot', target_vm, snapshot_name], stdout=PIPE)
-	out, err = proc.communicate()
-	return out
+	try:
+		check_call(['vmrun', 'snapshot', target_vm, snapshot_name])
+		return None
+	except CalledProcessError as err:
+		return None
 
 def revert_vm_snapshot(target_vm, snapshot_name):
-	proc = Popen(['vmrun', 'revertToSnapshot', target_vm, snapshot_name], stdout=PIPE)
-	out, err = proc.communicate()
-	return out
+	error = None
+	try:
+		check_call(['vmrun', 'revertToSnapshot', target_vm, snapshot_name])
+		# start target vm
+		check_call(['vmrun', 'start', target_vm])
+	except CalledProcessError as err:
+		error = err
+	return error
 
 def delete_vm_snapshot(target_vm, snapshot_name):
-	proc = Popen(['vmrun', 'deleteSnapshot', target_vm, snapshot_name], stdout=PIPE)
-	out, err = proc.communicate()
-	return out
+	try:
+		check_call(['vmrun', 'deleteSnapshot', target_vm, snapshot_name])
+		return None
+	except CalledProcessError as err:
+		return err
 
 def list_vm_snapshot(target_vm):
 	proc = Popen(['vmrun', 'listSnapshots', target_vm], stdout=PIPE)
