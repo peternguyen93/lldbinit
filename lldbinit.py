@@ -87,6 +87,7 @@ from struct import *
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
+from xnu import *
 
 try:
 	from keystone import *
@@ -210,6 +211,7 @@ aarch64_registers = [
 	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
 ]
 
+SelectedVM = ''
 
 def __lldb_init_module(debugger, internal_dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
@@ -377,6 +379,22 @@ def __lldb_init_module(debugger, internal_dict):
 		ci.HandleCommand("command script add -f lldbinit.cmd_arm32 arm32", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_arm64 arm64", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_armthumb armthumb", res)
+
+	# xnu kernel debug commands
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_breakpoint kbp", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_to_offset ktooff", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_all_process showallproc", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_search_process_by_name showproc", res)
+
+	# VMware/Virtualbox support
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_reverse_snapshot vmrevert", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_delete_snapshot vmdelsnap", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_list_snapshot vmshowsnap", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_show_vm vmlist", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_vm_select_vm vmselect", res)
+
 	# add the hook - we don't need to wait for a target to be loaded
 	ci.HandleCommand("target stop-hook add -o \"HandleHookStopOnTarget\"", res)
 	ci.HandleCommand("command script add --function lldbinit.cmd_banner banner", res)
@@ -437,7 +455,19 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 	[ 'tele', 'view memory page'],
 	[ 'xinfo', 'find address belong to image'],
 	[ 'pattern_create', 'create cyclic string'],
-	[ 'pattern_offset', 'find offset in cyclic string']
+	[ 'pattern_offset', 'find offset in cyclic string'],
+	[ 'showallkexts', 'show all loaded kexts (only for xnu kernel debug)'],
+	[ 'kbp', 'set breakpoint at offset for specific kext (only for xnu kernel debug)'],
+	[ 'ktooff', 'convert current address to offset from basse address of kext (only for xnu kernel debug)'],
+	[ 'showallproc', 'show all running process (only for xnu kernel debug)'],
+	[ 'showproc', 'show specific process information of target process (only for xnu kernel debug)'],
+
+	['vmsnapshot', 'take snapshot for running virtual machine'],
+	['vmreverse', 'reverse snapshot for running virtual machine'],
+	['vmdelsnap', 'delete snapshot of running virtual machine'],
+	['vmshowsnap', 'show all snapshot of running virtual machine']
+	['vmlist', 'list running virtual machine'],
+	['vmselect', 'select running virtual machine']
 	]
 
 	print("lldbinit available commands:")
@@ -642,7 +672,6 @@ def cmd_m_bp(debugger, command, result, _dict):
 		result.PutCString('Module {0} is not found'.format(module_name))
 		return
 
-	cur_target = debugger.GetSelectedTarget()
 	text_section = get_text_section(target_module)
 	base_addr = text_section.GetLoadAddress(cur_target)
 	target_addr = base_addr + offset
@@ -2149,6 +2178,21 @@ def cmd_vmmap(debugger, command, result, _dict):
 	'''
 		vmmap like in Linux
 	'''
+	if platform.system() == 'Linux':
+		# cat /proc/pid/maps
+		proc = get_process()
+		proc_id = proc.GetProcessID()
+
+		with open('/proc/{0}/maps'.format(proc_id), 'r') as f:
+			map_info = f.read()
+			print(map_info)
+
+		return
+
+	if platform.system() != 'Darwin':
+		print('[!] This command only works in macOS')
+		return
+
 	addr = evaluate(command)
 	if addr == None:
 		# add color or sth like in this text
@@ -2540,14 +2584,16 @@ def get_operands(source_address):
 	target = get_target()
 	# use current memory address
 	# needs to be this way to workaround SBAddress init bug
-	src_sbaddr = lldb.SBAddress()
-	src_sbaddr.load_addr = source_address
+	# src_sbaddr = lldb.SBAddress()
+	# src_sbaddr.load_addr = source_address
+	src_sbaddr = lldb.SBAddress(source_address, target)
 	instruction_list = target.ReadInstructions(src_sbaddr, 1, 'intel')
 	if instruction_list.GetSize() == 0:
 		print("[-] error: not enough instructions disassembled.")
 		return ""    
 	cur_instruction = instruction_list[0]
-	return cur_instruction.operands
+	# return cur_instruction.operands
+	return cur_instruction.GetOperands(target)
 
 # find out the size of an instruction using internal disassembler
 def get_inst_size(target_addr):
@@ -2577,8 +2623,8 @@ def disassemble(start_address, count):
 	# current memory addresses and what is happening right now
 	# we use the empty init and then set the property which is read/write for load_addr
 	# this whole thing seems like a bug?
-	mem_sbaddr = lldb.SBAddress()
-	mem_sbaddr.load_addr = start_address
+	# mem_sbaddr = lldb.SBAddress()
+	# mem_sbaddr.load_addr = start_address
 	# disassemble to get the file and memory version
 	# we could compute this by finding sections etc but this way it seems
 	# much simpler and faster
@@ -2592,19 +2638,26 @@ def disassemble(start_address, count):
 	# but the branch instructions addresses are the file addresses
 	# bug on SBAddress init implementation???
 	# this also has problems with symbols - the memory version doesn't have them
-	instructions_mem = target.ReadInstructions(mem_sbaddr, count, "intel")
+	# instructions_mem = target.ReadInstructions(mem_sbaddr, count, "intel")
 	instructions_file = target.ReadInstructions(file_sbaddr, count, "intel")
-	if instructions_mem.GetSize() != instructions_file.GetSize():
-		print("[-] error: instructions arrays sizes are different.")
-		return
+	# if instructions_mem.GetSize() != instructions_file.GetSize():
+	# 	print("[-] error: instructions arrays sizes are different.")
+	# 	return
 	# find out the biggest instruction lenght and mnemonic length
 	# so we can have a uniform output
 	max_size = 0
 	max_mnem_size = 0
-	for i in instructions_mem:
-		if i.size > max_size:
-			max_size = i.size        
-		mnem_len = len(i.mnemonic)
+	# for i in instructions_mem:
+	# 	if i.size > max_size:
+	# 		max_size = i.size
+	# 	mnem_len = len(i.mnemonic)
+	# 	if mnem_len > max_mnem_size:
+	# 		max_mnem_size = mnem_len
+	for instr in instructions_file:
+		if instr.size > max_size:
+			max_size = instr.size
+
+		mnem_len = len(instr.GetMnemonic(target))
 		if mnem_len > max_mnem_size:
 			max_mnem_size = mnem_len
 	
@@ -2617,7 +2670,8 @@ def disassemble(start_address, count):
 	count = 0
 	blockstart_sbaddr = None
 	blockend_sbaddr = None
-	for mem_inst in instructions_mem:
+	# for mem_inst in instructions_mem:
+	for mem_inst in instructions_file:
 		# get the same instruction but from the file version because we need some info from it
 		file_inst = instructions_file[count]
 		# try to extract the symbol name from this location if it exists
@@ -2636,7 +2690,19 @@ def disassemble(start_address, count):
 		elif symbol_name != None:
 			# print the first time there is a symbol name and save its interval
 			# so we don't print again until there is a different symbol
-			if not blockstart_sbaddr or (int(file_inst.addr) < int(blockstart_sbaddr)) or (int(file_inst.addr) >= int(blockend_sbaddr)):
+			cur_load_addr = file_inst.GetAddress().GetLoadAddress(target)
+
+			blockstart_addr = 0
+			if blockstart_sbaddr:
+				blockstart_addr = blockstart_sbaddr.GetLoadAddress(target)
+
+			blockend_addr = 0
+			if blockend_sbaddr:
+				blockend_addr = blockend_sbaddr.GetLoadAddress(target)
+
+			# if not blockstart_sbaddr or (int(file_inst.addr) < int(blockstart_sbaddr)) or (int(file_inst.addr) >= int(blockend_sbaddr)):
+			if not blockstart_addr or (cur_load_addr < blockstart_addr) \
+																or (cur_load_addr >= blockend_addr):
 				if CONFIG_ENABLE_COLOR == 1:
 					color(COLOR_SYMBOL_NAME)
 					output("{} @ {}:".format(symbol_name, module_name) + "\n")
@@ -2648,8 +2714,10 @@ def disassemble(start_address, count):
 		
 		# get the instruction bytes formatted as uint8
 		inst_data = mem_inst.GetData(target).uint8
-		mnem = mem_inst.mnemonic
-		operands = mem_inst.operands
+		# mnem = mem_inst.mnemonic
+		mnem = mem_inst.GetMnemonic(target)
+		# operands = mem_inst.operands
+		operands = mem_inst.GetOperands(target)
 		bytes_string = ""
 		total_fill = max_size - mem_inst.size
 		total_spaces = mem_inst.size - 1
@@ -2664,7 +2732,7 @@ def disassemble(start_address, count):
 			bytes_string += "  " * total_fill
 			bytes_string += " " * total_fill
 		
-		mnem_len = len(mem_inst.mnemonic)
+		mnem_len = len(mem_inst.GetMnemonic(target))
 		if mnem_len < max_mnem_size:
 			missing_spaces = max_mnem_size - mnem_len
 			mnem += " " * missing_spaces
@@ -2680,15 +2748,18 @@ def disassemble(start_address, count):
 		#file_addr = mem_inst.addr.GetFileAddress()
 		file_addr = file_inst.addr.GetFileAddress()
 		
-		comment = ""
-		if file_inst.comment != "":
-			comment = " ; " + file_inst.comment
+		# comment = ""
+		# if file_inst.comment != "":
+		# 	comment = " ; " + file_inst.comment
+		comment = file_inst.GetComment(target)
+		if comment != '':
+			comment = " ; " + comment
 
 		if current_pc == memory_addr:
 			# try to retrieve extra information if it's a branch instruction
 			# used to resolve indirect branches and try to extract Objective-C selectors
 			if mem_inst.DoesBranch():
-				flow_addr = get_indirect_flow_address(int(mem_inst.addr))
+				flow_addr = get_indirect_flow_address(mem_inst.GetAddress().GetLoadAddress(target))
 				if flow_addr > 0:
 					flow_module_name = get_module_name(flow_addr)
 					symbol_info = ""
@@ -2701,7 +2772,8 @@ def disassemble(start_address, count):
 					
 					if comment == "":
 						# remove space for instructions without operands
-						if mem_inst.operands == "":
+						# if mem_inst.operands == "":
+						if mem_inst.GetOperands(target):
 							comment = "; " + symbol_info + hex(flow_addr) + " @ " + flow_module_name
 						else:
 							comment = " ; " + symbol_info + hex(flow_addr) + " @ " + flow_module_name
@@ -3038,6 +3110,183 @@ def cmd_IphoneConnect(debugger, command, result, dict):
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
+# xnu kernel debug support command
+
+def cmd_xnu_showallkexts(debugger, command, result, dict):
+	xnu_print_all_kexts()
+
+def cmd_xnu_breakpoint(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 2:
+		print('kbp <kext_name> <offset>')
+		return
+
+	kext_name = args[0]
+	offset = int(args[1], 16)
+
+	base_address = xnu_get_kext_base_address(kext_name)
+	if base_address == 0:
+		print(f'[!] Couldn\'t found base address of kext {kext_name}')
+		return
+
+	target_address = offset + base_address
+
+	target = debugger.GetSelectedTarget()
+	target.BreakpointCreateByAddress(target_address)
+	print('Done')
+
+def cmd_xnu_to_offset(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 2:
+		print('showallproc <kext_name> <address>')
+		return
+
+	kext_name = args[0]
+	address = evaluate(args[1])
+
+	base_address = xnu_get_kext_base_address(kext_name)
+	if base_address == 0:
+		print(f'[!] Couldn\'t found base address of kext {kext_name}')
+		return
+
+	offset = address - base_address
+	print(f'Offsset from Kext {kext_name} base address : {hex(offset)}')
+
+def cmd_xnu_list_all_process(debugger, command, result, dict):
+	xnu_list_all_process()
+
+def cmd_xnu_search_process_by_name(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 1:
+		print('showproc <process name>')
+		return
+
+	proc_name = args[0]
+	xnu_proc = xnu_search_process_by_name(proc_name)
+	if xnu_proc == None:
+		print(f'[!] Couldn\'t found your process {proc_name}')
+		return
+
+	error = lldb.SBError()
+
+	proc_name = xnu_proc.GetChildMemberWithName('p_name')
+	cstr_proc_name = proc_name.GetData().GetString(error, 0)
+	p_pid = xnu_proc.GetChildMemberWithName('p_pid').GetValue()
+
+	print(f'+ {p_pid} - {cstr_proc_name} - {xnu_proc.GetValue()}')
+
+## VMware / VirtualBox commands
+
+def cmd_vm_show_vm(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	running_vms = get_all_running_vm()
+
+	if not running_vms:
+		print('[!] No virtual machine is running.')
+		return
+
+	for vm_name in running_vms:
+		print(f'- {vm_name} : {running_vms[vm_name]}')
+
+def cmd_vm_select_vm(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	global SelectedVM
+
+	args = command.split('\n')
+	if len(args) < 1:
+		print('vmselect <vm_name>')
+		return
+
+	vm_name = args[0]
+	running_vms = get_all_running_vm()
+	if vm_name not in running_vms:
+		print(f'[!] Couldn found your vm name {vm_name}')
+		return
+
+	SelectedVM = running_vms[vm_name]
+
+def cmd_vm_take_snapshot(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	global SelectedVM
+
+	args = command.split('\n')
+	if len(args) < 1:
+		print('vmsnapshot <snapshot name>')
+		return
+
+	if not SelectedVM:
+		print('[!] Please run `vmselect` to select your vm')
+		return
+
+	take_vm_snapshot(SelectedVM, args[0])
+	print('Done.')
+
+def cmd_vm_reverse_snapshot(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	global SelectedVM
+
+	args = command.split('\n')
+	if len(args) < 1:
+		print('vmreverse <snapshot name>')
+		return
+
+	if not SelectedVM:
+		print('[!] Please run `vmselect` to select your vm')
+		return
+
+	revert_vm_snapshot(SelectedVM, args[0])
+	print('Done.')
+
+def cmd_vm_delete_snapshot(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	global SelectedVM
+
+	args = command.split('\n')
+	if len(args) < 1:
+		print('vmreverse <snapshot name>')
+		return
+
+	if not SelectedVM:
+		print('[!] Please run `vmselect` to select your vm')
+		return
+
+	delete_vm_snapshot(SelectedVM, args[0])
+	print('Done.')
+
+def cmd_vm_list_snapshot(debugger, command, result, dict):
+	if not vmfusion_check():
+		print('[!] This feature only support Vmware Fusion')
+		return
+
+	global SelectedVM
+	
+	if not SelectedVM:
+		print('[!] Please run `vmselect` to select your vm')
+		return
+
+	snapshots = list_vm_snapshot(SelectedVM)
+
+	print('Current snapshot:')
+	for snapshot in snapshots:
+		print('-', snapshot)
+
+# ------------------------------------------------------------------------------------------- #
+
 def display_stack():
 	'''Hex dump current stack pointer'''
 	stack_addr = get_current_sp()
@@ -3245,12 +3494,16 @@ def get_indirect_flow_address(src_addr):
 	if cur_instruction.DoesBranch() == False:
 		return -1
 
-	if "ret" in cur_instruction.mnemonic:
+	mnemonic = cur_instruction.GetMnemonic(target)
+	# if "ret" in cur_instruction.mnemonic:
+	if 'ret' in mnemonic:
 		ret_addr = get_ret_address()
 		return ret_addr
-	if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
+	# if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
+	if mnemonic in ('call', 'jmp'):
 		# don't care about RIP relative jumps
-		if cur_instruction.operands.startswith('0x'):
+		# if cur_instruction.operands.startswith('0x'):
+		if cur_instruction.GetOperands(target).startswith('0x'):
 			return -1
 		indirect_addr = get_indirect_flow_target(src_addr)
 		return indirect_addr

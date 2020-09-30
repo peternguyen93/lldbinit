@@ -5,6 +5,7 @@ Author : peternguyen
 import lldb
 import re
 from subprocess import Popen, PIPE
+from pathlib import Path
 from struct import *
 import platform
 
@@ -582,4 +583,94 @@ def quotechars( chars ):
 			data += "."
 	return data
 
+def GetUUIDSummary(uuid_bytes : bytes):
+
+	assert len(uuid_bytes) == 16, 'UUID bytes must be 16 in length'
+	data = list(uuid_bytes)
+	return "{a[0]:02X}{a[1]:02X}{a[2]:02X}{a[3]:02X}-{a[4]:02X}{a[5]:02X}-{a[6]:02X}{a[7]:02X}-{a[8]:02X}{a[9]:02X}-{a[10]:02X}{a[11]:02X}{a[12]:02X}{a[13]:02X}{a[14]:02X}{a[15]:02X}".format(a=data)
+
+def GetConnectionProtocol():
+	""" Returns a string representing what kind of connection is used for debugging the target.
+		params: None
+		returns:
+			str - connection type. One of ("core","kdp","gdb", "unknown")
+	"""
+	target = get_target()
+
+	retval = "unknown"
+	process_plugin_name = target.GetProcess().GetPluginName().lower()
+	if "kdp" in process_plugin_name:
+		retval = "kdp"
+	elif "gdb" in process_plugin_name:
+		retval = "gdb"
+	elif "mach-o" in process_plugin_name and "core" in process_plugin_name:
+		retval = "core"
+	return retval
+
+def addressof(sb_value):
+	try:
+		return sb_value.GetAddress().GetLoadAddress(get_target())
+	except AttributeError:
+		return 0xffffffffffffffff
+
+def cast_address_to(target, var_name, address, type_name):
+	pointer = target.FindFirstType(type_name).GetPointerType()
+	if pointer.IsValid():
+		my_var = target.CreateValueFromAddress(var_name, lldb.SBAddress(address, target), pointer)
+		return my_var
+	return None
+
 ## --------- END --------- ##
+# VMware fusion bridge to take snapshots, restore and create new snapshot in lldb
+# this feature support debug XNU kernel easier and faster in lldb
+def vmfusion_check():
+	vmrun = Path('/Applications/VMware Fusion.app/Contents/Public/vmrun')
+	return True if vmrun.exists() else False
+
+def get_all_running_vm():
+	vms = {}
+
+	proc = Popen(['vmrun', 'list'], stdout=PIPE)
+	out, err = proc.communicate()
+	
+	lines = out.split(b'\n')[1:]
+	for line in lines:
+		if not line:
+			continue
+
+		vm_path = Path(line.decode('utf-8'))
+		vm_name = vm_path.stem.replace(' ','-')
+
+		vms[vm_name] = vm_path
+
+	return vms
+
+def take_vm_snapshot(target_vm, snapshot_name):
+	proc = Popen(['vmrun', 'snapshot', target_vm, snapshot_name], stdout=PIPE)
+	out, err = proc.communicate()
+	return out
+
+def revert_vm_snapshot(target_vm, snapshot_name):
+	proc = Popen(['vmrun', 'revertToSnapshot', target_vm, snapshot_name], stdout=PIPE)
+	out, err = proc.communicate()
+	return out
+
+def delete_vm_snapshot(target_vm, snapshot_name):
+	proc = Popen(['vmrun', 'deleteSnapshot', target_vm, snapshot_name], stdout=PIPE)
+	out, err = proc.communicate()
+	return out
+
+def list_vm_snapshot(target_vm):
+	proc = Popen(['vmrun', 'listSnapshots', target_vm], stdout=PIPE)
+	out, err = proc.communicate()
+
+	snapshots = []
+
+	lines = out.split(b'\n')[1:]
+	for line in lines:
+		if not line:
+			continue
+		snapshot_name = line.decode('utf-8')
+		snapshots.append(snapshot_name)
+
+	return snapshots
