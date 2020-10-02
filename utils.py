@@ -4,10 +4,11 @@ Author : peternguyen
 '''
 import lldb
 import re
-from subprocess import Popen, PIPE, check_call
+from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
 from struct import *
 import platform
+import time
 
 # ----------------------------------------------------------
 # Packing and Unpacking functions
@@ -555,7 +556,7 @@ def cyclic_find(subseq, length = 0x10000):
 			return pos
 	return -1
 
-def hexdump(addr, chars, sep, width, lines=5):
+def hexdump(addr, chars, sep, width, lines=0xFFFFFFF):
 	l = []
 	line_count = 0
 	while chars:
@@ -563,13 +564,12 @@ def hexdump(addr, chars, sep, width, lines=5):
 			break
 		line = chars[:width]
 		chars = chars[width:]
-		line = line.ljust( width, '\000' )
-		arch = get_arch()
+		line = line.ljust(width, b'\x00' )
 		if get_pointer_size() == 4:
 			szaddr = "0x%.08X" % addr
 		else:
 			szaddr = "0x%.016lX" % addr
-		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
+		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % c for c in line ), sep, quotechars( line )))
 		addr += 0x10
 		line_count = line_count + 1
 	return "\n".join(l)
@@ -607,16 +607,16 @@ def GetConnectionProtocol():
 		retval = "core"
 	return retval
 
-def addressof(sb_value):
+def address_of(target, sb_value):
 	try:
-		return sb_value.GetAddress().GetLoadAddress(get_target())
+		return sb_value.GetAddress().GetLoadAddress(target)
 	except AttributeError:
 		return 0xffffffffffffffff
 
 def cast_address_to(target, var_name, address, type_name):
 	pointer = target.FindFirstType(type_name).GetPointerType()
 	if pointer.IsValid():
-		my_var = target.CreateValueFromAddress(var_name, lldb.SBAddress(address, target), pointer)
+		my_var = target.CreateValueFromExpression(var_name, f'({pointer.name}){hex(address)}')
 		return my_var
 	return None
 
@@ -626,6 +626,12 @@ def cast_address_to(target, var_name, address, type_name):
 def vmfusion_check():
 	vmrun = Path('/Applications/VMware Fusion.app/Contents/Public/vmrun')
 	return True if vmrun.exists() else False
+
+def argument_validate(arg):
+	if ' ' in arg:
+		return f'"{arg}"'
+
+	return arg
 
 def get_all_running_vm():
 	vms = {}
@@ -647,7 +653,7 @@ def get_all_running_vm():
 
 def take_vm_snapshot(target_vm, snapshot_name):
 	try:
-		check_call(['vmrun', 'snapshot', target_vm, snapshot_name])
+		check_call(['vmrun', 'snapshot', target_vm, argument_validate(snapshot_name)])
 		return None
 	except CalledProcessError as err:
 		return None
@@ -655,7 +661,9 @@ def take_vm_snapshot(target_vm, snapshot_name):
 def revert_vm_snapshot(target_vm, snapshot_name):
 	error = None
 	try:
-		check_call(['vmrun', 'revertToSnapshot', target_vm, snapshot_name])
+		# revert back to specific snapshot
+		check_call(['vmrun', 'revertToSnapshot', target_vm, argument_validate(snapshot_name)])
+		time.sleep(2)
 		# start target vm
 		check_call(['vmrun', 'start', target_vm])
 	except CalledProcessError as err:
@@ -664,7 +672,7 @@ def revert_vm_snapshot(target_vm, snapshot_name):
 
 def delete_vm_snapshot(target_vm, snapshot_name):
 	try:
-		check_call(['vmrun', 'deleteSnapshot', target_vm, snapshot_name])
+		check_call(['vmrun', 'deleteSnapshot', target_vm, argument_validate(snapshot_name)])
 		return None
 	except CalledProcessError as err:
 		return err

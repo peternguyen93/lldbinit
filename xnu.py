@@ -67,37 +67,78 @@ def xnu_get_kext_base_address(kext_name):
 def xnu_get_all_tasks():
 	task_queue = target.FindGlobalVariables('tasks', 1).GetValueAtIndex(0)
 
-def xnu_read_user_address(task, address, value):
-	target = get_target()
+def xnu_get_kdp_pmap_addr(target):
+	kdp_pmap_var = target.FindGlobalVariables('kdp_pmap', 1).GetValueAtIndex(0)
+	return address_of(target, kdp_pmap_var)
+
+def xnu_write_task_kdp_pmap(target, task):
+	kdp_pmap_addr = xnu_get_kdp_pmap_addr(target)
+	if kdp_pmap_addr == 0xffffffffffffffff:
+		print('[!] kdp_pmap not found')
+		return False
+
+	my_task = cast_address_to(target, 'my_task', task, 'task')
+	if my_task == None:
+		print(f'[!] Invalid task address {hex(task)}')
+		return False
+
+	# write target pmap address to kdp_pmap to resolve userspace address
+	pmap = my_task.GetChildMemberWithName('map').GetChildMemberWithName('pmap').GetValue()
+	pmap = int(pmap, 16)
+
+	if not write_mem(kdp_pmap_addr, pack('<Q', pmap)):
+		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
+		return False
+
+	return True
+
+def xnu_reset_kdp_pmap(target):
+	kdp_pmap_addr = xnu_get_kdp_pmap_addr(target)
+	if kdp_pmap_addr == 0xffffffffffffffff:
+		print('[!] kdp_pmap not found')
+		return False
+
+	if not write_mem(kdp_pmap_addr, pack('<Q', 0)):
+		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
+		return False
+
+	return True
+
+
+def xnu_read_user_address(target, task, address, size):
+	out = ''
 
 	if GetConnectionProtocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return b''
 
-	kdp_pmap = target.FindGlobalVariables('kdp_pmap', 1).GetValueAtIndex(0)
-	kdp_pmap_addr = addressof(kdp_pmap)
-	if kdp_pmap_addr == 0xffffffffffffffff:
-		print('[!] kdp_pmap not found')
-		return b''
-
-	my_task = cast_address_to(target, 'my_task', task, 'task')
-	if my_task == None:
-		print(f'[!] Invalid task address {hex(task)}')
-		return b''
-
-	# write target pmap address to kdp_pmap to resolve userspace address
-	pmap = my_task.GetChildMemberWithName('map').GetChildMemberWithName('pmap').GetValue()
-	if not write_mem(kdp_pmap_addr, pack('<Q', pmap)):
-		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
+	if xnu_write_task_kdp_pmap(target, task):
 		return b''
 
 	out = read_mem(address, size)
 
-	if not write_mem(kdp_pmap_addr, pack('<Q', 0)):
-		print(f'[!] Overwrite kdp_pmap with 0 failed.')
+	if not xnu_reset_kdp_pmap(target):
+		print(f'[!] Reset kdp_pmap failed')
 		return b''
 
 	return out
+
+def xnu_write_user_address(target, task, address, value):
+	if GetConnectionProtocol() != 'kdp':
+		print('[!] xnu_read_user_address() only works on kdp-remote')
+		return False
+
+	if xnu_write_task_kdp_pmap(target, task):
+		return False
+
+	if not write_mem(address, value):
+		return False
+
+	if not xnu_reset_kdp_pmap(target):
+		print(f'[!] Reset kdp_pmap failed')
+		return False
+
+	return True
 
 def xnu_search_process_by_name(search_proc_name):
 	target = get_target()

@@ -386,6 +386,9 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_to_offset ktooff", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_all_process showallproc", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_search_process_by_name showproc", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_read_usr_addr readuseraddr", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_set_kdp_pmap setkdp", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_reset_kdp_pmap resetkdp", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -462,11 +465,14 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'ktooff', 'convert current address to offset from basse address of kext (only for xnu kernel debug)'],
 		[ 'showallproc', 'show all running process (only for xnu kernel debug)'],
 		[ 'showproc', 'show specific process information of target process (only for xnu kernel debug)'],
+		[ 'readuseraddr', 'read userspace address (only for xnu kernel debug with kdp-remote)'],
+		[ 'setkdp', 'set kdp_pmap (only for xnu kernel debug with kdp-remote)'],
+		[ 'resetkdp', 'reset kdp_pmap (only for xnu kernel debug with kdp-remote)'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
 		['vmdelsnap', 'delete snapshot of running virtual machine'],
-		['vmshowsnap', 'show all snapshot of running virtual machine']
+		['vmshowsnap', 'show all snapshot of running virtual machine'],
 		['vmlist', 'list running virtual machine'],
 		['vmselect', 'select running virtual machine']
 	]
@@ -3175,6 +3181,49 @@ def cmd_xnu_search_process_by_name(debugger, command, result, dict):
 	p_pid = xnu_proc.GetChildMemberWithName('p_pid').GetValue()
 
 	print(f'+ {p_pid} - {cstr_proc_name} - {xnu_proc.GetValue()}')
+
+def cmd_xnu_read_usr_addr(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 3:
+		print('readusraddr <task> <user space address> <size>')
+		return
+
+	task_ptr = evaluate(args[0])
+	user_space_addr = evaluate(args[1])
+	try:
+		size = int(args[2])
+	except (TypeError, ValueError):
+		size = 0x20
+
+	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), task_ptr, user_space_addr, size)
+	print(hexdump(user_space_addr, raw_data, " ", 16))
+
+def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
+	if GetConnectionProtocol() != 'kdp':
+		print('[!] cmd_xnu_set_kdp_pmap() only works on kdp-remote')
+		return
+
+	args = command.split(' ')
+	if len(args) < 1:
+		print('set_kdp_map <task>')
+		return
+
+	task_ptr = evaluate(args[0])
+	if xnu_write_task_kdp_pmap(debugger.GetSelectedTarget(), task_ptr):
+		print('[+] Set kdp_pmap ok.')
+	else:
+		print('[!] Set kdp_pmap failed.')
+
+def cmd_xnu_reset_kdp_pmap(debugger, command, result, dict):
+	if GetConnectionProtocol() != 'kdp':
+		print('[!] cmd_xnu_set_kdp_pmap() only works on kdp-remote')
+		return
+
+	if not xnu_reset_kdp_pmap(debugger.GetSelectedTarget()):
+		print(f'[!] Reset kdp_pmap failed.')
+		return
+
+	print('[+] Reset kdp_pmap ok.')
 
 ## VMware / VirtualBox commands
 
