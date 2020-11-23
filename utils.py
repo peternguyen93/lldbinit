@@ -101,9 +101,13 @@ def evaluate(command):
 		try:
 			value = int(value.GetValue(), base=10)
 			return value
-		except Exception as e:
-			print("Exception on evaluate: " + str(e))
-			return None
+		except ValueError as e:
+			try:
+				value = int(value.GetValue(), base=16)
+				return value
+			except ValueError as e:
+				print("Exception on evaluate: " + str(e))
+				return None
 	# use the target version - if no target exists we can't do anything about it
 	else:
 		target = get_target()    
