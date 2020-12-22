@@ -667,11 +667,11 @@ def output(x):
 def cmd_m_bp(debugger, command, result, _dict):
 	args = command.split(' ')
 	if len(args) < 2:
-		print('mbp <module_name> <offset>')
+		print('mbp <module_name> <ida default mapped address>')
 		return
 
 	module_name = args[0]
-	offset = evaluate(args[1])
+	ida_mapped_addr = evaluate(args[1])
 
 	cur_target = debugger.GetSelectedTarget()
 	target_module = find_module_by_name(cur_target, module_name)
@@ -680,7 +680,10 @@ def cmd_m_bp(debugger, command, result, _dict):
 		return
 
 	text_section = get_text_section(target_module)
-	base_addr = text_section.GetLoadAddress(cur_target)
+	file_base_addr = text_section.file_addr # get default address of module in file
+	offset = ida_mapped_addr - file_base_addr
+
+	base_addr = text_section.GetLoadAddress(cur_target) # get ASLR address when module is loaded
 	target_addr = base_addr + offset
 
 	cur_target.BreakpointCreateByAddress(target_addr)

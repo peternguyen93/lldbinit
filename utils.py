@@ -262,7 +262,6 @@ def find_module_by_name(target, module_name):
 	for module in target.modules:
 		if module.file.basename == module_name:
 			return module
-
 	return None
 
 def get_text_section(module):
