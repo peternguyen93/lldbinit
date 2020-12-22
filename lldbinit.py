@@ -2764,7 +2764,7 @@ def disassemble(start_address, count):
 		# fix dyld_shared_arm64 dispatch function to correct symbol name
 		dyld_resolve_name = ''
 		dyld_call_addr = 0
-		if is_aarch64() and instructions_file[count].GetMnemonic(target) == 'bl':
+		if is_aarch64() and instructions_file[count].GetMnemonic(target) in ('bl', 'b'):
 			indirect_addr = get_indirect_flow_target(memory_addr)
 			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
 			dyld_resolve_name = lldb.SBAddress(dyld_call_addr,target).GetSymbol().GetName()
@@ -3764,8 +3764,6 @@ def dump_jumpx86(eflags):
 	masks = { "CF":0, "PF":2, "AF":4, "ZF":6, "SF":7, "TF":8, "IF":9, "DF":10, "OF":11 }
 	flags = { key: bool(eflags & (1 << value)) for key, value in masks.items() }
 
-	error = lldb.SBError()
-	target = get_target()
 	if is_i386():
 		pc_addr = get_gp_register("eip")
 	elif is_x64():
@@ -3924,8 +3922,6 @@ def dump_jump_arm64(cpsr):
 	masks = { 'N': 31, 'Z':30, 'C':29, 'V': 28, 'Q':27, 'J':24, 'E':9, 'A':8, 'I':7, 'F':6, 'T':5}
 	flags = { key: bool(cpsr & (1 << value)) for key, value in masks.items() }
 
-	error = lldb.SBError()
-	target = get_target()
 	if is_aarch64():
 		pc_addr = get_gp_register("pc")
 	else:
@@ -3936,17 +3932,64 @@ def dump_jump_arm64(cpsr):
 	color("RED")
 	output_string=''
 
-	if mnemonic == 'cbnz':
+	if mnemonic == 'cbnz' or mnemonic == 'tbnz':
 		if not flags['Z']:
-			output_string="Jump is taken (Z = 0)"
+			output_string = "Jump is taken (Z = 0)"
 		else:
-			output_string="Jump is NOT taken (Z = 1)"
-	elif mnemonic == 'cbz':
+			output_string = "Jump is NOT taken (Z = 1)"
+	
+	elif mnemonic == 'cbz' or mnemonic == 'tbz':
 		if flags['Z']:
-			output_string="Jump is taken (Z = 1)"
+			output_string = "Jump is taken (Z = 1)"
 		else:
-			output_string="Jump is NOT taken (Z = 0)"
+			output_string = "Jump is NOT taken (Z = 0)"
+	
+	elif mnemonic == 'b.eq':
+		if flags['Z']:
+			output_string = "Jump is taken (Z = 1)"
+		else:
+			output_string = "Jump is NOT taken (Z = 0)"
+	
+	elif mnemonic == 'b.ne':
+		if not flags['Z']:
+			output_string = "Jump is taken (Z = 0)"
+		else:
+			output_string = "Jump is NOT taken (Z = 1)"
+	
+	elif mnemonic == 'b.cs' or mnemonic == 'b.hs':
+		if flags['C']:
+			output_string = "Jump is taken (C = 1)"
+		else:
+			output_string = "Jump is NOT taken (C = 0)"
+	
+	elif mnemonic == 'b.cc' or mnemonic == 'b.lo':
+		if not flags['C']:
+			output_string = "Jump is taken (C = 0)"
+		else:
+			output_string = "Jump is NOT taken (C = 1)"
+	
+	elif mnemonic == 'b.mi':
+		if flags['N']:
+			output_string = "Jump is taken (N = 1)"
+		else:
+			output_string = "Jump is NOT taken (N = 0)"
+	
+	elif mnemonic in ('csel', 'csinc', 'csinv', 'csneg'):
+		operands = get_operands(pc_addr)
+		if flags['Z']:
+			output_string = mnemonic + " => " + operands.split(',')[1]
+		else:
+			output_string = mnemonic + " => " + operands.split(',')[2]
+	
+	elif mnemonic in ('cset', 'csetm'):
+		operands = get_operands(pc_addr)
 
+		if flags['Z']:
+			result = 1 if mnemonic == 'cset' else -1
+		else:
+			result = 0
+		output_string = "{0} => {1} = {2}".format(mnemonic, operands.split(',')[0], result)
+	
 	output(' '*40 + output_string)
 	color("RESET")
 
