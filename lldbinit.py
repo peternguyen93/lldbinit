@@ -2089,12 +2089,15 @@ def cmd_xinfo(debugger, command, result, dict):
 def cmd_telescope(debugger, command, result, dict):
 	args = command.split(' ')
 
-	if len(args) != 2:
+	if len(args) > 2 or len(args) == 0:
 		print('tele/telescope <address / $register> <length (multiply by 8 for x64 and 4 for x86)>')
 		return
-
-	address = evaluate(args[0])
-	length = evaluate(args[1])
+	
+	try:
+		address = evaluate(args[0])
+		length = evaluate(args[1])
+	except IndexError:
+		length = 8
 
 	print(COLORS['RED'] + 'CODE' + COLORS['RESET'] + ' | ', end='')
 	print(COLORS['YELLOW'] + 'STACK' + COLORS['RESET'] + ' | ', end='')
@@ -2757,19 +2760,35 @@ def disassemble(start_address, count):
 		# without having to rebase everything etc
 		#file_addr = mem_inst.addr.GetFileAddress()
 		file_addr = file_inst.addr.GetFileAddress()
+
+		# fix dyld_shared_arm64 dispatch function to correct symbol name
+		dyld_resolve_name = ''
+		dyld_call_addr = 0
+		if is_aarch64() and instructions_file[count].GetMnemonic(target) == 'bl':
+			indirect_addr = get_indirect_flow_target(memory_addr)
+			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
+			dyld_resolve_name = lldb.SBAddress(dyld_call_addr,target).GetSymbol().GetName()
 		
 		# comment = ""
 		# if file_inst.comment != "":
 		# 	comment = " ; " + file_inst.comment
-		comment = file_inst.GetComment(target)
-		if comment != '':
-			comment = " ; " + comment
+		if not dyld_resolve_name:
+			comment = file_inst.GetComment(target)
+			if comment != '':
+				comment = " ; " + comment
+		else:
+			comment = " ; resolve symbol stub: j___" + dyld_resolve_name
 
 		if current_pc == memory_addr:
 			# try to retrieve extra information if it's a branch instruction
 			# used to resolve indirect branches and try to extract Objective-C selectors
 			if mem_inst.DoesBranch():
-				flow_addr = get_indirect_flow_address(mem_inst.GetAddress().GetLoadAddress(target))
+
+				if dyld_call_addr:
+					flow_addr = dyld_call_addr
+				else:
+					flow_addr = get_indirect_flow_address(mem_inst.GetAddress().GetLoadAddress(target))
+					
 				if flow_addr > 0:
 					flow_module_name = get_module_name(flow_addr)
 					symbol_info = ""
@@ -2790,7 +2809,12 @@ def disassemble(start_address, count):
 					else:
 						comment = comment + " " + hex(flow_addr) + " @ " + flow_module_name
 				
-				objc = get_objectivec_selector(current_pc)
+				objc = ''
+				if dyld_call_addr:
+					objc = get_objectivec_selector_at(dyld_call_addr)
+				else:
+					objc = get_objectivec_selector(current_pc)
+				
 				if objc != "":
 					comment = comment + " -> " + objc
 
@@ -3402,6 +3426,7 @@ def get_rip_relative_addr(source_address):
 def get_indirect_flow_target(source_address):
 	err = lldb.SBError()
 	operand = get_operands(source_address)
+	operand = operand.lower()
 	#output("Operand: {}\n".format(operand))
 	# calls into a deferenced memory address
 	if "qword" in operand:
@@ -3436,14 +3461,16 @@ def get_indirect_flow_target(source_address):
 		if err.Success() == False:
 			return 0
 		return 0        
-	# calls into a register
-	elif operand.startswith('r') or operand.startswith('e'):
+	# calls into a register included x86_64 and aarch64
+	elif operand.startswith('r') or operand.startswith('e') or operand.startswith('x') or \
+			operand in ('lr', 'sp', 'fp'):
 		#output("register call\n")
-		x = re.search('([a-z0-9]{2,3})', operand)
-		if x == None:
-			return 0
+		# x = re.search('([a-z0-9]{2,3})', operand)
+		# if x == None:
+		# 	return 0
+
 		#output("Result {}\n".format(x.group(1)))
-		value = get_frame().EvaluateExpression("$" + x.group(1))
+		value = get_frame().EvaluateExpression("$" + operand)
 		if value.IsValid() == False:
 			return 0
 		return int(value.GetValue(), 10)
@@ -3532,6 +3559,15 @@ def display_indirect_flow():
 			output("\n")
 			display_objc()
 		output("\n")
+	
+	if "br" == mnemonic or "bl" == mnemonic or "b" == mnemonic:
+		indirect_addr = get_indirect_flow_target(pc_addr)
+		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
+
+		if is_sending_objc_msg() == True:
+			output("\n")
+			display_objc()
+		output("\n")
 
 	return
 
@@ -3544,22 +3580,31 @@ def get_indirect_flow_address(src_addr):
 		return -1
 
 	cur_instruction = instruction_list.GetInstructionAtIndex(0)
-	if cur_instruction.DoesBranch() == False:
+	if not cur_instruction.DoesBranch():
 		return -1
 
 	mnemonic = cur_instruction.GetMnemonic(target)
 	# if "ret" in cur_instruction.mnemonic:
 	if 'ret' in mnemonic:
+		if is_aarch64():
+			ret_addr = get_gp_register('x30')
+			if ret_addr == 0:
+				ret_addr = get_gp_register('lr')
+			
+			return ret_addr
+
 		ret_addr = get_ret_address()
 		return ret_addr
 	# if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
-	if mnemonic in ('call', 'jmp'):
+	# trace both x86_64 and arm64
+	if mnemonic in ('call', 'jmp') or mnemonic in ('bl', 'br', 'b', 'blr'):
 		# don't care about RIP relative jumps
 		# if cur_instruction.operands.startswith('0x'):
 		if cur_instruction.GetOperands(target).startswith('0x'):
 			return -1
 		indirect_addr = get_indirect_flow_target(src_addr)
 		return indirect_addr
+
 	# all other branches just return -1
 	return -1
 
@@ -3573,19 +3618,15 @@ def get_module_name(src_addr):
 	else:
 		return module_name
 
-def get_objectivec_selector(src_addr):
-	err = lldb.SBError()
+def get_objectivec_selector_at(call_addr):
 	target = get_target()
-
-	call_addr = get_indirect_flow_target(src_addr)
-	if call_addr == 0:
-		return ""
+	
 	sym_addr = lldb.SBAddress(call_addr, target)
 	symbol = sym_addr.GetSymbol()
 	# XXX: add others?
-	if symbol.name != "objc_msgSend":
+	if not symbol.name.startswith("objc_msgSend"):
 		return ""
-
+	
 	options = lldb.SBExpressionOptions()
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
@@ -3599,7 +3640,12 @@ def get_objectivec_selector(src_addr):
 	if className_summary:
 		# className_summary must be not None 
 		className = className_summary.strip('"')
-		selector_addr = get_gp_register("rsi")
+		if is_x64():
+			selector_addr = get_gp_register("rsi")
+		else:
+			selector_addr = get_gp_register("x1")
+		
+		err = lldb.SBError()
 		membuf = get_process().ReadMemory(selector_addr, 0x100, err)
 		strings = membuf.split(b'\00')
 		if len(strings) != 0:
@@ -3608,6 +3654,17 @@ def get_objectivec_selector(src_addr):
 			return "[" + className + "]"
 	
 	return ""
+
+def get_objectivec_selector(src_addr):
+
+	if not is_x64() and not is_aarch64():
+		return ''
+
+	call_addr = get_indirect_flow_target(src_addr)
+	if call_addr == 0:
+		return ""
+		
+	return get_objectivec_selector_at(call_addr)
 
 # ------------------------------------------------------------
 # The heart of lldbinit - when lldb stop this is where we land 
@@ -3683,6 +3740,9 @@ def print_cpu_registers(register_names):
 
 	if is_x64() or is_i386():
 		dump_jumpx86(reg_flag_val)
+	elif is_aarch64():
+		dump_jump_arm64(reg_flag_val)
+	
 	output("\n")
 		
 def dump_eflags(eflags):
@@ -3711,7 +3771,7 @@ def dump_jumpx86(eflags):
 	elif is_x64():
 		pc_addr = get_gp_register("rip")
 	else:
-		print("[-] error: wrong architecture.")
+		print("[-] dump_jumpx86() error: wrong architecture.")
 		return
 
 	mnemonic = get_mnemonic(pc_addr)
@@ -3860,6 +3920,36 @@ def dump_cpsr(cpsr):
 		else:
 			output(flag.lower() + " ")
 
+def dump_jump_arm64(cpsr):
+	masks = { 'N': 31, 'Z':30, 'C':29, 'V': 28, 'Q':27, 'J':24, 'E':9, 'A':8, 'I':7, 'F':6, 'T':5}
+	flags = { key: bool(cpsr & (1 << value)) for key, value in masks.items() }
+
+	error = lldb.SBError()
+	target = get_target()
+	if is_aarch64():
+		pc_addr = get_gp_register("pc")
+	else:
+		print("[-] dump_jump_arm64() error: wrong architecture.")
+		return
+
+	mnemonic = get_mnemonic(pc_addr)
+	color("RED")
+	output_string=''
+
+	if mnemonic == 'cbnz':
+		if not flags['Z']:
+			output_string="Jump is taken (Z = 0)"
+		else:
+			output_string="Jump is NOT taken (Z = 1)"
+	elif mnemonic == 'cbz':
+		if flags['Z']:
+			output_string="Jump is taken (Z = 1)"
+		else:
+			output_string="Jump is NOT taken (Z = 0)"
+
+	output(' '*40 + output_string)
+	color("RESET")
+
 def print_registers():
 	if is_i386(): 
 		# reg32()
@@ -3953,7 +4043,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		display_data()
 		output("\n")
 
-	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64():
+	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64() and is_aarch64():
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("---------------------------------------------------------------------------------")

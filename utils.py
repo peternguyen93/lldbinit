@@ -149,6 +149,8 @@ def get_instance_object():
 		instanceObject = '*(id*)($esp+4)'
 	elif is_x64():
 		instanceObject = '(id)$rdi'
+	elif is_aarch64():
+		instanceObject = '(id)$x0'
 	# not supported yet
 	elif is_arm():
 		instanceObject = None
@@ -218,8 +220,10 @@ def get_current_sp():
 		sp_addr = get_gp_register("esp")
 	elif is_x64():
 		sp_addr = get_gp_register("rsp")
+	elif is_aarch64():
+		sp_addr = get_gp_register("sp")
 	else:
-		print("[-] error: wrong architecture.")
+		print("[-] get_current_sp() error: wrong architecture.")
 		return 0
 	return sp_addr
 
@@ -694,3 +698,32 @@ def list_vm_snapshot(target_vm):
 		snapshots.append(snapshot_name)
 
 	return snapshots
+
+def dyld_arm64_resolve_dispatch(target, target_address):
+	'''
+		target: SBTarget
+		target_address : target call address bl <addr>
+		@return : a symbol if error return empty string
+
+		dyld_shared_cache of iOS alway dispatch an other module function by:
+		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
+		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
+		libdispatch:__stubs:00000001800B2E30                 BR              X16
+
+		out goal to resolve symbol for this address
+	'''
+
+	instructions = target.ReadInstructions(lldb.SBAddress(target_address, target), 3, 'intel')
+	if instructions.GetSize() == 0:
+		return 0
+	
+	if instructions[0].GetMnemonic(target) != 'adrp' or instructions[1].GetMnemonic(target) != 'add' or \
+		(instructions[2].GetMnemonic(target) != 'br' and instructions[2].GetOperands(target).startswith('x')):
+		return 0
+	
+	page_shift = int(instructions[0].GetOperands(target).split(',')[1])
+	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
+	call_offset = int(instructions[1].GetOperands(target).split(',')[2].strip(' #'), 16)
+	call_func_ptr = target_page + call_offset 
+
+	return call_func_ptr
