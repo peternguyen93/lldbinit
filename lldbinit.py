@@ -2610,7 +2610,6 @@ def get_operands(source_address):
 
 # find out the size of an instruction using internal disassembler
 def get_inst_size(target_addr):
-	err = lldb.SBError()
 	target = get_target()
 
 	instruction_list = target.ReadInstructions(lldb.SBAddress(target_addr, target), 1, 'intel')
@@ -3113,7 +3112,6 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 # XXX: help
 def cmd_IphoneConnect(debugger, command, result, dict): 
 	'''Connect to debugserver running on iPhone'''
-	help = """ """
 	global GlobalListOutput
 	GlobalListOutput = []
 		
@@ -3370,7 +3368,6 @@ def display_stack():
 	if stack_addr == 0:
 		return
 	err = lldb.SBError()
-	target = get_target()
 	membuff = get_process().ReadMemory(stack_addr, 0x100, err)
 	if err.Success() == False:
 		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
@@ -3384,14 +3381,12 @@ def display_stack():
 def display_data():
 	'''Hex dump current data window pointer'''
 	data_addr = DATA_WINDOW_ADDRESS
-	print(data_addr)
 	if data_addr == 0:
 		return
 	err = lldb.SBError()
-	target = get_target()
 	membuff = get_process().ReadMemory(data_addr, 0x100, err)
 	if err.Success() == False:
-		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
+		print("[-] error: Failed to read memory at 0x{:x}.".format(data_addr))
 		return
 	if len(membuff) == 0:
 		print("[-] error: not enough bytes read.")
@@ -3402,7 +3397,6 @@ def display_data():
 # workaround for lldb bug regarding RIP addressing outside main executable
 def get_rip_relative_addr(source_address):
 	err = lldb.SBError()
-	target = get_target()
 	inst_size = get_inst_size(source_address)
 	if inst_size <= 1:
 		print("[-] error: instruction size too small.")
@@ -3507,10 +3501,7 @@ def is_sending_objc_msg():
 
 # XXX: x64 only
 def display_objc():
-	pc_addr = get_current_pc()
-
 	err = lldb.SBError()
-	target = get_target()
 
 	options = lldb.SBExpressionOptions()
 	options.SetLanguage(lldb.eLanguageTypeObjC)
@@ -3624,7 +3615,7 @@ def get_objectivec_selector_at(call_addr):
 	sym_addr = lldb.SBAddress(call_addr, target)
 	symbol = sym_addr.GetSymbol()
 	# XXX: add others?
-	if not symbol.name.startswith("objc_msgSend"):
+	if not symbol.name.startswith("objc_msgSend") and symbol.name not in ('objc_alloc', 'objc_opt_class'):
 		return ""
 	
 	options = lldb.SBExpressionOptions()
@@ -3638,20 +3629,23 @@ def get_objectivec_selector_at(call_addr):
 		
 	className_summary = classname_value.GetSummary()
 	if className_summary:
-		# className_summary must be not None 
 		className = className_summary.strip('"')
-		if is_x64():
-			selector_addr = get_gp_register("rsi")
-		else:
-			selector_addr = get_gp_register("x1")
 		
-		err = lldb.SBError()
-		membuf = get_process().ReadMemory(selector_addr, 0x100, err)
-		strings = membuf.split(b'\00')
-		if len(strings) != 0:
-			return "[" + className + " " + strings[0].decode('utf-8') + "]"
+		if symbol.name.startswith("objc_msgSend"):
+			if is_x64():
+				selector_addr = get_gp_register("rsi")
+			else:
+				selector_addr = get_gp_register("x1")
+			
+			err = lldb.SBError()
+			membuf = get_process().ReadMemory(selector_addr, 0x100, err)
+			strings = membuf.split(b'\00')
+			if len(strings) != 0:
+				return "[" + className + " " + strings[0].decode('utf-8') + "]"
+			else:
+				return "[" + className + "]"
 		else:
-			return "[" + className + "]"
+			return "{0}({1})".format(symbol.name, className)
 	
 	return ""
 
@@ -3784,28 +3778,28 @@ def dump_jumpx86(eflags):
 			output_string="Jump is NOT taken (c = 0 and z = 0)"
 	## opcode 0x73: JAE, JNB, JNC (jump if CF=0)
 	## opcode 0x0F83: JNC, JNB, JAE (jump if CF=0)
-	if "jae" == mnemonic or "jnb" == mnemonic or "jnc" == mnemonic:
+	elif "jae" == mnemonic or "jnb" == mnemonic or "jnc" == mnemonic:
 		if flags["CF"] == False:
 			output_string="Jump is taken (c = 0)"
 		else:
 			output_string="Jump is NOT taken (c != 0)"
 	## opcode 0x72: JB, JC, JNAE (jump if CF=1)
 	## opcode 0x0F82: JNAE, JB, JC
-	if "jb" == mnemonic or "jc" == mnemonic or "jnae" == mnemonic:
+	elif "jb" == mnemonic or "jc" == mnemonic or "jnae" == mnemonic:
 		if flags["CF"] == True:
 			output_string="Jump is taken (c = 1)"
 		else:
 			output_string="Jump is NOT taken (c != 1)"
 	## opcode 0x76: JBE, JNA (jump if CF=1 or ZF=1)
 	## opcode 0x0F86: JBE, JNA
-	if "jbe" == mnemonic or "jna" == mnemonic:
+	elif "jbe" == mnemonic or "jna" == mnemonic:
 		if flags["CF"] == True or flags["ZF"] == 1:
 			output_string="Jump is taken (c = 1 or z = 1)"
 		else:
 			output_string="Jump is NOT taken (c != 1 or z != 1)"
 	## opcode 0xE3: JCXZ, JECXZ, JRCXZ (jump if CX=0 or ECX=0 or RCX=0)
 	# XXX: we just need cx output...
-	if "jcxz" == mnemonic or "jecxz" == mnemonic or "jrcxz" == mnemonic:
+	elif "jcxz" == mnemonic or "jecxz" == mnemonic or "jrcxz" == mnemonic:
 		rcx = get_gp_register("rcx")
 		ecx = get_gp_register("ecx")
 		cx = get_gp_register("cx")
@@ -3815,95 +3809,96 @@ def dump_jumpx86(eflags):
 			output_string="Jump is NOT taken (cx != 0 or ecx != 0 or rcx != 0)"
 	## opcode 0x74: JE, JZ (jump if ZF=1)
 	## opcode 0x0F84: JZ, JE, JZ (jump if ZF=1)
-	if "je" == mnemonic or "jz" == mnemonic:
+	elif "je" == mnemonic or "jz" == mnemonic:
 		if flags["ZF"] == 1:
 			output_string="Jump is taken (z = 1)"
 		else:
 			output_string="Jump is NOT taken (z != 1)"
 	## opcode 0x7F: JG, JNLE (jump if ZF=0 and SF=OF)
 	## opcode 0x0F8F: JNLE, JG (jump if ZF=0 and SF=OF)
-	if "jg" == mnemonic or "jnle" == mnemonic:
+	elif "jg" == mnemonic or "jnle" == mnemonic:
 		if flags["ZF"] == 0 and flags["SF"] == flags["OF"]:
 			output_string="Jump is taken (z = 0 and s = o)"
 		else:
 			output_string="Jump is NOT taken (z != 0 or s != o)"
 	## opcode 0x7D: JGE, JNL (jump if SF=OF)
 	## opcode 0x0F8D: JNL, JGE (jump if SF=OF)
-	if "jge" == mnemonic or "jnl" == mnemonic:
+	elif "jge" == mnemonic or "jnl" == mnemonic:
 		if flags["SF"] == flags["OF"]:
 			output_string="Jump is taken (s = o)"
 		else:
 			output_string="Jump is NOT taken (s != o)"
 	## opcode: 0x7C: JL, JNGE (jump if SF != OF)
 	## opcode: 0x0F8C: JNGE, JL (jump if SF != OF)
-	if "jl" == mnemonic or "jnge" == mnemonic:
+	elif "jl" == mnemonic or "jnge" == mnemonic:
 		if flags["SF"] != flags["OF"]:
 			output_string="Jump is taken (s != o)"
 		else:
 			output_string="Jump is NOT taken (s = o)"
 	## opcode 0x7E: JLE, JNG (jump if ZF = 1 or SF != OF)
 	## opcode 0x0F8E: JNG, JLE (jump if ZF = 1 or SF != OF)
-	if "jle" == mnemonic or "jng" == mnemonic:
+	elif "jle" == mnemonic or "jng" == mnemonic:
 		if flags["ZF"] == 1 or flags["SF"] != flags["OF"]:
 			output_string="Jump is taken (z = 1 or s != o)"
 		else:
 			output_string="Jump is NOT taken (z != 1 or s = o)"
 	## opcode 0x75: JNE, JNZ (jump if ZF = 0)
 	## opcode 0x0F85: JNE, JNZ (jump if ZF = 0)
-	if "jne" == mnemonic or "jnz" == mnemonic:
+	elif "jne" == mnemonic or "jnz" == mnemonic:
 		if flags["ZF"] == 0:
 			output_string="Jump is taken (z = 0)"
 		else:
 			output_string="Jump is NOT taken (z != 0)"
 	## opcode 0x71: JNO (OF = 0)
 	## opcode 0x0F81: JNO (OF = 0)
-	if "jno" == mnemonic:
+	elif "jno" == mnemonic:
 		if flags["OF"] == 0:
 			output_string="Jump is taken (o = 0)"
 		else:
 			output_string="Jump is NOT taken (o != 0)"
 	## opcode 0x7B: JNP, JPO (jump if PF = 0)
 	## opcode 0x0F8B: JPO (jump if PF = 0)
-	if "jnp" == mnemonic or "jpo" == mnemonic:
+	elif "jnp" == mnemonic or "jpo" == mnemonic:
 		if flags["PF"] == 0:
 			output_string="Jump is NOT taken (p = 0)"
 		else:
 			output_string="Jump is taken (p != 0)"
 	## opcode 0x79: JNS (jump if SF = 0)
 	## opcode 0x0F89: JNS (jump if SF = 0)
-	if "jns" == mnemonic:
+	elif "jns" == mnemonic:
 		if flags["SF"] == 0:
 			output_string="Jump is taken (s = 0)"
 		else:
 			output_string="Jump is NOT taken (s != 0)"
 	## opcode 0x70: JO (jump if OF=1)
 	## opcode 0x0F80: JO (jump if OF=1)
-	if "jo" == mnemonic:
+	elif "jo" == mnemonic:
 		if flags["OF"] == 1:
 			output_string="Jump is taken (o = 1)"
 		else:
 			output_string="Jump is NOT taken (o != 1)"
 	## opcode 0x7A: JP, JPE (jump if PF=1)
 	## opcode 0x0F8A: JP, JPE (jump if PF=1)
-	if "jp" == mnemonic or "jpe" == mnemonic:
+	elif "jp" == mnemonic or "jpe" == mnemonic:
 		if flags["PF"] == 1:
 			output_string="Jump is taken (p = 1)"
 		else:
 			output_string="Jump is NOT taken (p != 1)"
 	## opcode 0x78: JS (jump if SF=1)
 	## opcode 0x0F88: JS (jump if SF=1)
-	if "js" == mnemonic:
+	elif "js" == mnemonic:
 		if flags["SF"] == 1:
 			output_string="Jump is taken (s = 1)"
 		else:
 			output_string="Jump is NOT taken (s != 1)"
 
-	if is_i386():
-		output(" " + output_string)
-	elif is_x64():
-		output(" "*46 + output_string)
-	else:
-		output(output_string)
+	if output_string:
+		if is_i386():
+			output(" " + output_string)
+		elif is_x64():
+			output(" "*46 + output_string)
+		else:
+			output(output_string)
 
 	color("RESET")
 
@@ -3990,7 +3985,9 @@ def dump_jump_arm64(cpsr):
 			result = 0
 		output_string = "{0} => {1} = {2}".format(mnemonic, operands.split(',')[0], result)
 	
-	output(' '*40 + output_string)
+	if output_string:
+		output(' '*40 + output_string)
+	
 	color("RESET")
 
 def print_registers():
