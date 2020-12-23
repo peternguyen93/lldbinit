@@ -2982,7 +2982,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	inst_list = []
 	while True:
-		line = raw_input('Assemble ("stop" or "end" to finish): ')
+		line = input('Assemble ("stop" or "end" to finish): ')
 		if line == 'stop' or line == 'end':
 			break
 		inst_list.append(line)
@@ -3012,7 +3012,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	inst_list = []
 	while True:
-		line = raw_input('Assemble ("stop" or "end" to finish): ')
+		line = input('Assemble ("stop" or "end" to finish): ')
 		if line == 'stop' or line == 'end':
 			break
 		inst_list.append(line)
@@ -3042,7 +3042,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	inst_list = []
 	while True:
-		line = raw_input('Assemble ("stop" or "end" to finish): ')
+		line = input('Assemble ("stop" or "end" to finish): ')
 		if line == 'stop' or line == 'end':
 			break
 		inst_list.append(line)
@@ -3072,7 +3072,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	inst_list = []
 	while True:
-		line = raw_input('Assemble ("stop" or "end" to finish): ')
+		line = input('Assemble ("stop" or "end" to finish): ')
 		if line == 'stop' or line == 'end':
 			break
 		inst_list.append(line)
@@ -3102,7 +3102,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	inst_list = []
 	while True:
-		line = raw_input('Assemble ("stop" or "end" to finish): ')
+		line = input('Assemble ("stop" or "end" to finish): ')
 		if line == 'stop' or line == 'end':
 			break
 		inst_list.append(line)
@@ -3614,6 +3614,12 @@ def get_objectivec_selector_at(call_addr):
 	
 	sym_addr = lldb.SBAddress(call_addr, target)
 	symbol = sym_addr.GetSymbol()
+	if symbol == None:
+		return ""
+	
+	if symbol.name == None:
+		return ""
+
 	# XXX: add others?
 	if not symbol.name.startswith("objc_msgSend") and symbol.name not in ('objc_alloc', 'objc_opt_class'):
 		return ""
@@ -3630,7 +3636,7 @@ def get_objectivec_selector_at(call_addr):
 	className_summary = classname_value.GetSummary()
 	if className_summary:
 		className = className_summary.strip('"')
-		
+
 		if symbol.name.startswith("objc_msgSend"):
 			if is_x64():
 				selector_addr = get_gp_register("rsi")
