@@ -289,6 +289,7 @@ def __lldb_init_module(debugger, internal_dict):
 	# Breakpoint related commands
 	#
 	ci.HandleCommand("command script add -f lldbinit.cmd_m_bp mbp", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_to_ida_addr toida", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bhb bhb", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bht bht", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_bpt bpt", res)
@@ -689,6 +690,32 @@ def cmd_m_bp(debugger, command, result, _dict):
 	cur_target.BreakpointCreateByAddress(target_addr)
 
 	result.PutCString('Done')
+
+def cmd_to_ida_addr(debugger, command, result, _dict):
+	args = command.split(' ')
+	if len(args) < 2:
+		print('toida <module_name> <ida default mapped address>')
+		print('Convert lldb ASLR address of specific module to ida mapped address')
+		return
+
+	module_name = args[0]
+	aslr_mapped_addr = evaluate(args[1])
+
+	cur_target = debugger.GetSelectedTarget()
+	target_module = find_module_by_name(cur_target, module_name)
+	if not target_module:
+		result.PutCString('Module {0} is not found'.format(module_name))
+		return
+	
+	text_section = get_text_section(target_module)
+
+	aslr_base_addr = text_section.GetLoadAddress(cur_target) # get ASLR address when module is loaded
+	offset = aslr_mapped_addr - aslr_base_addr
+	
+	ida_base_addr = text_section.file_addr # get default address of module in file
+	ida_mapped_addr = ida_base_addr + offset
+
+	result.PutCString('[+] Ida mapped address of {0} : {1}'.format(module_name, hex(ida_mapped_addr)))
 
 # temporary software breakpoint
 def cmd_bpt(debugger, command, result, dict):
