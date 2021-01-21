@@ -264,6 +264,10 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_DumpInstructions u", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_findmem findmem", res)
 	#
+	# ObjectiveC commands
+	#
+	ci.HandleCommand("command script add -f lldbinit.cmd_objc objc", res)
+	#
 	# Image commands
 	#
 	ci.HandleCommand("command script add -f lldbinit.cmd_xinfo xinfo", res)
@@ -1591,8 +1595,8 @@ Note: expressions supported, do not use spaces between operators.
 			return
 	elif len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return        
+			print(help)
+			return
 		dump_addr = evaluate(cmd[0])
 		if dump_addr == None:
 			print("[-] error: invalid input address value.")
@@ -2249,6 +2253,23 @@ def cmd_vmmap(debugger, command, result, _dict):
 		return
 
 	display_map_info(map_info)
+
+def cmd_objc(debugger, command, result, _dict):
+	'''
+		Return class name of objectiveC object
+	'''
+	
+	objc_addr = evaluate(command)
+	if objc_addr == None:
+		print('objc <register/address> => return class name of objectiveC object')
+		return
+	
+	class_name = objc_get_classname(hex(objc_addr))
+	# print content or structure of this objc object
+	res = lldb.SBCommandReturnObject()
+	lldb.debugger.GetCommandInterpreter().HandleCommand('p *(({0} *){1})'.format(class_name, hex(objc_addr)), res)
+	if res.Succeeded():
+		print(res.GetOutput())
 
 def cmd_pattern_create(debugger, command, result, _dict):
 	pattern_length = parse_number(command) 
@@ -3154,7 +3175,7 @@ def cmd_IphoneConnect(debugger, command, result, dict):
 
 	res = lldb.SBCommandReturnObject()
 	lldb.debugger.GetCommandInterpreter().HandleCommand("platform select remote-ios", res)
-	if res.Succeeded() == True:
+	if res.Succeeded():
 		output(res.GetOutput())
 	else:
 		output("[-] Error running platform select remote-ios")
@@ -3162,7 +3183,7 @@ def cmd_IphoneConnect(debugger, command, result, dict):
 		result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 		return
 	lldb.debugger.GetCommandInterpreter().HandleCommand("process connect connect://" + command, res)
-	if res.Succeeded() == True:
+	if res.Succeeded():
 		output("[+] Connected to iphone at : " + command)
 	else:
 		output(res.GetOutput())
@@ -3536,18 +3557,20 @@ def display_objc():
 
 #    command = '(void*)object_getClass({})'.format(get_instance_object())
 #    value = get_frame().EvaluateExpression(command, options).GetObjectDescription()
-	classname_command = '(const char *)object_getClassName((id){})'.format(get_instance_object())
-	classname_value = get_frame().EvaluateExpression(classname_command)
-	if classname_value.IsValid() == False:
+	className = objc_get_classname(get_instance_object())
+	if not className:
 		return
 	
-	className = classname_value.GetSummary().strip('"')
-
-	selector_addr = get_gp_register("rsi")
+	if is_x64():
+		selector_addr = get_gp_register("rsi")
+	elif is_aarch64():
+		selector_addr = get_gp_register("x1")
+	else:
+		return
 
 	membuff = get_process().ReadMemory(selector_addr, 0x100, err)
-	strings = membuff.split(b'\x00')
-	if len(strings) != 0:
+	selector = membuff.split(b'\x00')
+	if len(selector) != 0:
 		color("RED")
 		output('Class: ')
 		color("RESET")
@@ -3555,34 +3578,34 @@ def display_objc():
 		color("RED")
 		output(' Selector: ')
 		color("RESET")
-		output(strings[0].decode('utf-8'))
+		output(selector[0].decode('utf-8'))
 
 def display_indirect_flow():
 	target = get_target()
 	pc_addr = get_current_pc()
 	mnemonic = get_mnemonic(pc_addr)
 
-	if ("ret" in mnemonic) == True:
+	if ("ret" in mnemonic):
 		indirect_addr = get_ret_address()
 		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
 		output("\n")
 		return
 	
-	if "call" == mnemonic or "callq" == mnemonic or ("jmp" in mnemonic) == True:
+	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
 		# we need to identify the indirect target address
 		indirect_addr = get_indirect_flow_target(pc_addr)
 		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
 
-		if is_sending_objc_msg() == True:
+		if is_sending_objc_msg():
 			output("\n")
 			display_objc()
 		output("\n")
 	
-	if "br" == mnemonic or "bl" == mnemonic or "b" == mnemonic:
+	if ("br" == mnemonic) or ("bl" == mnemonic) or ("b" == mnemonic):
 		indirect_addr = get_indirect_flow_target(pc_addr)
 		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
 
-		if is_sending_objc_msg() == True:
+		if is_sending_objc_msg():
 			output("\n")
 			display_objc()
 		output("\n")
@@ -3648,7 +3671,8 @@ def get_objectivec_selector_at(call_addr):
 		return ""
 
 	# XXX: add others?
-	if not symbol.name.startswith("objc_msgSend") and symbol.name not in ('objc_alloc', 'objc_opt_class'):
+	if (not symbol.name.startswith("objc_msgSend")) and \
+			(symbol.name not in ('objc_alloc', 'objc_opt_class')):
 		return ""
 	
 	options = lldb.SBExpressionOptions()
@@ -3672,9 +3696,9 @@ def get_objectivec_selector_at(call_addr):
 			
 			err = lldb.SBError()
 			membuf = get_process().ReadMemory(selector_addr, 0x100, err)
-			strings = membuf.split(b'\00')
-			if len(strings) != 0:
-				return "[" + className + " " + strings[0].decode('utf-8') + "]"
+			selector = membuf.split(b'\00')
+			if len(selector) != 0:
+				return "[" + className + " " + selector[0].decode('utf-8') + "]"
 			else:
 				return "[" + className + "]"
 		else:
@@ -4059,20 +4083,24 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		if thread.IsValid() == False:
 			return
 
-	frame = get_frame()
-	if type(frame) == type(None): 
-		return
+	# frame = get_frame()
+	# frame = get_frame_at_selected_thread()
+	# if type(frame) == type(None): 
+	# 	return
 			
-	thread= frame.GetThread()
+	# thread= frame.GetThread()
 	while True:
 		frame = get_frame()
+		if type(frame) == type(None): 
+			return
+
 		thread = frame.GetThread()
-		
 		if thread.GetStopReason() == lldb.eStopReasonNone or thread.GetStopReason() == lldb.eStopReasonInvalid:
+		# if thread.GetStopReason() == lldb.eStopReasonInvalid:
 			time.sleep(0.001)
 		else:
 			break
-	
+		
 	GlobalListOutput = []
 	
 	arch = get_arch()

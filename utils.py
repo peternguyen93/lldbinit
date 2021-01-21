@@ -56,11 +56,18 @@ def get_selected_frame(debugger):
 def get_arch():
 	return lldb.debugger.GetSelectedTarget().triple.split('-')[0]
 
+def get_process():
+	'''
+		A read only property that returns an lldb object
+		that represents the process (lldb.SBProcess)that this target owns.
+	'''
+	return get_target().process
+
 def get_frame():
 	frame = None
 	# SBProcess supports thread iteration -> SBThread
 	for thread in get_process():
-		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
+		if (thread.GetStopReason() != lldb.eStopReasonNone) and (thread.GetStopReason() != lldb.eStopReasonInvalid):
 			frame = thread.GetFrameAtIndex(0)
 			break
 	# this will generate a false positive when we start the target the first time because there's no context yet.
@@ -71,9 +78,9 @@ def get_frame():
 def get_thread():
 	thread = None
 	# SBProcess supports thread iteration -> SBThread
-	for thread in get_process():
-		if thread.GetStopReason() != lldb.eStopReasonNone and thread.GetStopReason() != lldb.eStopReasonInvalid:
-			thread = thread
+	for _thread in get_process():
+		if (_thread.GetStopReason() != lldb.eStopReasonNone) and (_thread.GetStopReason() != lldb.eStopReasonInvalid):
+			thread = _thread
 	
 	if not thread:
 		print("[-] warning: get_thread() failed. Is the target binary started?")
@@ -87,9 +94,15 @@ def get_target():
 		return None
 	return target
 
-def get_process():
-	# A read only property that returns an lldb object that represents the process (lldb.SBProcess) that this target owns.
-	return get_target().process
+def try_convert_str_to_int(num_str):
+	try:
+		return int(num_str, base=10)
+	except ValueError:
+		try:
+			return int(num_str, base=16)
+		except ValueError as e:
+			print("Exception on evaluate: " + str(e))
+			return 0
 
 # evaluate an expression and return the value it represents
 def evaluate(command):
@@ -97,30 +110,25 @@ def evaluate(command):
 	if frame:
 		value = frame.EvaluateExpression(command)
 		if value.IsValid() == False:
-			return None
-		try:
-			value = int(value.GetValue(), base=10)
-			return value
-		except ValueError as e:
-			try:
-				value = int(value.GetValue(), base=16)
-				return value
-			except ValueError as e:
-				print("Exception on evaluate: " + str(e))
-				return None
+			return 0
+		
+		if value.GetValue() == None:
+			return try_convert_str_to_int(command)
+		
+		return try_convert_str_to_int(value.GetValue())
 	# use the target version - if no target exists we can't do anything about it
 	else:
-		target = get_target()    
+		target = get_target()
 		if target == None:
-			return None
+			return 0
 		value = target.EvaluateExpression(command)
 		if value.IsValid() == False:
-			return None
-		try:
-			value = int(value.GetValue(), base=10)
-			return value
-		except:
-			return None
+			return 0
+		
+		if value.GetValue() == None:
+			return try_convert_str_to_int(command)
+		
+		return try_convert_str_to_int(value.GetValue())
 
 def is_i386():
 	arch = get_arch()
@@ -181,29 +189,23 @@ def get_gp_registers():
 		reg_name = reg.GetName()
 		registers[reg_name] = reg.unsigned
 	return registers
-		
-def get_register(reg_name):
-	regs = get_registers("general")
-	if regs == None:
-		return "0"
-	for reg in regs:
-		if reg_name == reg.GetName():
-			return reg.GetValue()
-	return "0"
 
+def get_registers_by_frame(frame, kind):
+	if not frame:
+		return None
+	registerSets = frame.GetRegisters() # Return type of SBValueList.
+	for registerSet in registerSets:
+		if kind.lower() in registerSet.GetName().lower():
+			return registerSet
+	return None
+		
 def get_registers(kind):
 	"""Returns the registers given the frame and the kind of registers desired.
 
 	Returns None if there's no such kind.
 	"""
 	frame = get_frame()
-	if not frame:
-		return None
-	registerSet = frame.GetRegisters() # Return type of SBValueList.
-	for value in registerSet:
-		if kind.lower() in value.GetName().lower():
-			return value
-	return None
+	return get_registers_by_frame(frame, kind)
 
 # retrieve current instruction pointer via platform independent $pc register
 def get_current_pc():
@@ -261,6 +263,14 @@ Where value can be a single value or an expression.
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
+
+def objc_get_classname(objc):
+	classname_command = '(const char *)object_getClassName((id){})'.format(objc)
+	classname_value = get_frame().EvaluateExpression(classname_command)
+	if classname_value.IsValid() == False:
+		return ''
+	
+	return classname_value.GetSummary().strip('"')
 
 def find_module_by_name(target, module_name):
 	for module in target.modules:
