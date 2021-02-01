@@ -3258,10 +3258,16 @@ def cmd_xnu_search_process_by_name(debugger, command, result, dict):
 def cmd_xnu_read_usr_addr(debugger, command, result, dict):
 	args = command.split(' ')
 	if len(args) < 3:
-		print('readusraddr <task> <user space address> <size>')
+		print('readusraddr <proc_name> <user space address> <size>')
 		return
 
-	task_ptr = evaluate(args[0])
+	process_name = args[0]
+	proc_struct_addr = xnu_search_process_by_name(process_name)
+	if proc_struct_addr == None:
+		print('[!] Process does not found.')
+		return
+	
+	task_ptr = int(proc_struct_addr.GetChildMemberWithName('task').GetValue(), 16)
 	user_space_addr = evaluate(args[1])
 	try:
 		size = int(args[2])
@@ -3278,10 +3284,15 @@ def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
 
 	args = command.split(' ')
 	if len(args) < 1:
-		print('set_kdp_map <task>')
+		print('setkdp <process name>')
 		return
-
-	task_ptr = evaluate(args[0])
+	
+	proc_t_ptr = xnu_search_process_by_name(args[0])
+	if proc_t_ptr == None:
+		print(f'[!] Process {args[0]} does not found')
+		return
+	
+	task_ptr = task_ptr = int(proc_t_ptr.GetChildMemberWithName('task').GetValue(), 16)
 	if xnu_write_task_kdp_pmap(debugger.GetSelectedTarget(), task_ptr):
 		print('[+] Set kdp_pmap ok.')
 	else:

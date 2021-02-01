@@ -64,9 +64,6 @@ def xnu_get_kext_base_address(kext_name):
 
 	return 0
 
-def xnu_get_all_tasks():
-	task_queue = target.FindGlobalVariables('tasks', 1).GetValueAtIndex(0)
-
 def xnu_get_kdp_pmap_addr(target):
 	kdp_pmap_var = target.FindGlobalVariables('kdp_pmap', 1).GetValueAtIndex(0)
 	return address_of(target, kdp_pmap_var)
@@ -112,7 +109,7 @@ def xnu_read_user_address(target, task, address, size):
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return b''
 
-	if xnu_write_task_kdp_pmap(target, task):
+	if not xnu_write_task_kdp_pmap(target, task):
 		return b''
 
 	out = read_mem(address, size)

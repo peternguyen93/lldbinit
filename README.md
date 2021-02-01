@@ -78,3 +78,9 @@ The **skip** command allows you to skip exactly one instruction to next instruct
 
 The **bpn** command breakpoints the next instruction (ignoring control flow!). It's useful to get out of a loop (when you are at the loop conditional jump tester and you breakpoint the next instruction to let the loop execute without stepping every iteration).
 
+### New XNU commands:
+- setkdp : set kdp_pmap with specific process task_t, then user can easily use `db, dd, dq` or `x/40gx` to read/write userspace address
+- resetkdp : clear kdp_pmap to zero
+- readuseraddr : read userspace address of specific process
+- showallproc : list all xnu processes
+- showallkexts: list all loaded kexts
