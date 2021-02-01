@@ -38,19 +38,18 @@ def xnu_get_all_kexts():
 
 	kext_summary_header = OSKextLoadedKextSummaryHeader.from_buffer_copy(raw_data)
 
-	assert kext_summary_header.entry_size == sizeof(OSKextLoadedKextSummary), 'Difference size of OSKextLoadedKextSummary'
-
-	kexts_info = []
+	entry_size = kext_summary_header.entry_size
+	kextInfos = []
 	for i in range(kext_summary_header.numSummaries):
-		raw_data = read_mem(base_address + 0x10 + i * sizeof(OSKextLoadedKextSummary), sizeof(OSKextLoadedKextSummary))
-		if len(raw_data) < sizeof(OSKextLoadedKextSummary):
+		raw_data = read_mem(base_address + 0x10 + i * entry_size, entry_size)
+		if len(raw_data) < entry_size:
 			print('[!] Read OSKextLoadedKextSummary error.')
 			return []
 
-		kext_info = OSKextLoadedKextSummary.from_buffer_copy(raw_data)
-		kexts_info.append(kext_info)
+		kextinfo = OSKextLoadedKextSummary.from_buffer_copy(raw_data)
+		kextInfos.append(kextinfo)
 
-	return kexts_info
+	return kextInfos
 
 def xnu_get_kext_base_address(kext_name):
 	kext_infos = xnu_get_all_kexts()
