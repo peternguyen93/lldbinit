@@ -394,6 +394,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_read_usr_addr readuseraddr", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_set_kdp_pmap setkdp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_reset_kdp_pmap resetkdp", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_kdp_reboot kdp-reboot", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -473,6 +474,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'readuseraddr', 'read userspace address (only for xnu kernel debug with kdp-remote)'],
 		[ 'setkdp', 'set kdp_pmap (only for xnu kernel debug with kdp-remote)'],
 		[ 'resetkdp', 'reset kdp_pmap (only for xnu kernel debug with kdp-remote)'],
+		[ 'kdp-reboot', 'reboot the remote machine'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3191,6 +3193,18 @@ def cmd_IphoneConnect(debugger, command, result, dict):
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
 # xnu kernel debug support command
+def cmd_xnu_kdp_reboot(debugger, command, result, dict):
+	'''
+		Restart debuggee vm
+	'''
+	if GetConnectionProtocol() != 'kdp':
+		print('Target is not connect over kdp')
+		return False
+	
+	print('[+] Reboot the remote machine')
+	lldb.debugger.HandleCommand('process plugin packet send --command 0x13')
+	lldb.debugger.HandleCommand('detach')
+	return True
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	xnu_print_all_kexts()
