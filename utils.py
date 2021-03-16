@@ -463,6 +463,24 @@ def read_mem(addr, size):
 
 	return mem_data
 
+def read_str(addr, size):
+	err = lldb.SBError()
+	process = get_process()
+
+	c_str = b''
+	for i in range(size):
+		c = process.ReadMemory(addr + i, 1, err)
+		if not err.Success():
+			c_str = b''
+			break
+		
+		if c == b'\x00':
+			break
+		
+		c_str += c
+			
+	return c_str
+
 def write_mem(addr, data):
 	err = lldb.SBError()
 	process = get_process()
@@ -486,6 +504,27 @@ def try_read_mem(addr, size):
 		size -= 1
 
 	return mem_data
+
+def size_of(struct_name):
+	res = lldb.SBCommandReturnObject()
+	lldb.debugger.GetCommandInterpreter().HandleCommand(f"p sizeof({struct_name})", res)
+	if res.GetError():
+		# struct is not exists
+		return -1
+	
+	m = re.search(r'\(unsigned long\) \$\d+ = (\d+)\n', res.GetOutput())
+	if m:
+		return int(m.group(1))
+	
+	return -1
+
+def findGlobalVariable(name):
+	target = get_target()
+	sbvar = target.FindGlobalVariables(name, 1).GetValueAtIndex(0)
+	if not sbvar.IsValid():
+		print(f'[!] Unable to find {name}, please boot xnu with development kernel Or load binary has debug infos')
+		return None
+	return sbvar
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory

@@ -211,6 +211,7 @@ aarch64_registers = [
 	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
 ]
 
+XNU_ZONES = None
 SelectedVM = ''
 
 def __lldb_init_module(debugger, internal_dict):
@@ -395,6 +396,13 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_set_kdp_pmap setkdp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_reset_kdp_pmap resetkdp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_kdp_reboot kdp-reboot", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_bootargs showbootargs", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_panic_log panic_log", res)
+
+	# xnu zone commands
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone_name zone_list_name", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_zones_by_name zone_find_index", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -474,7 +482,12 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'readuseraddr', 'read userspace address (only for xnu kernel debug with kdp-remote)'],
 		[ 'setkdp', 'set kdp_pmap (only for xnu kernel debug with kdp-remote)'],
 		[ 'resetkdp', 'reset kdp_pmap (only for xnu kernel debug with kdp-remote)'],
+		[ 'showbootargs', 'show boot-args of macOS'],
 		[ 'kdp-reboot', 'reboot the remote machine'],
+		[ 'panic_log', 'show panic log'],
+		[ 'zone_list_name', 'list xnu zones name'],
+		[ 'zone_find_index', 'list index of matching zone'],
+		[ 'zone_show_logged_zone', 'show all logged zones enable by "-zlog=<zone_name>'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3205,6 +3218,71 @@ def cmd_xnu_kdp_reboot(debugger, command, result, dict):
 	lldb.debugger.HandleCommand('process plugin packet send --command 0x13')
 	lldb.debugger.HandleCommand('detach')
 	return True
+
+def cmd_xnu_show_bootargs(debugger, command, result, dict):
+	boot_args = xnu_showbootargs(debugger.GetSelectedTarget())
+	if not boot_args:
+		print('Please use kernel.development to boot macOS')
+		return False
+	
+	print('[+] macOS boot-args:', repr(boot_args))
+	return True
+
+def cmd_xnu_panic_log(debugger, command, result, dict):
+
+	args = command.split(' ')
+	if len(args) > 1:
+		print('panic_log <save path | empty>')
+		return False
+	
+	panic_log = xnu_panic_log(debugger.GetSelectedTarget())
+	
+	if len(args) == 1 and args[0]:
+		log_file = args[0]
+		print(f'[+] Saving panic_log to {log_file}')
+		f = open(log_file, 'wb')
+		f.write(panic_log)
+		f.close()
+	else:
+		print('---- Panic Log ----')
+		print(panic_log.decode('utf-8'))
+	return True
+
+# xnu zones command
+
+def cmd_xnu_list_zone_name(debugger, command, result, dict):
+	global XNU_ZONES
+	if not XNU_ZONES:
+		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+	
+	zone_names = XNU_ZONES.showallzones_name()
+
+	print('[+] Zones:')
+	for i, zone_name in enumerate(zone_names):
+		print(f'- {i} | {zone_name}')
+	
+def cmd_xnu_show_zones_by_name(debugger, command, result, dict):
+	global XNU_ZONES
+	if not XNU_ZONES:
+		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+
+	args = command.split(' ')
+	if len(args) < 1:
+		print('zone_find_index <zone name>')
+		return False
+
+	zones = XNU_ZONES.findzone_by_names(args[0])
+
+	print('[+] Zones:')
+	for i, zone in zones:
+		print(f'- {i} | {XNU_ZONES.getZoneName(zone)}')
+
+def cmd_xnu_zshow_logged_zone(debugger, command, result, dict):
+	global XNU_ZONES
+	if not XNU_ZONES:
+		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+	
+	XNU_ZONES.show_zone_being_logged()
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	xnu_print_all_kexts()
