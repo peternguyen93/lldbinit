@@ -403,6 +403,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone_name zone_list_name", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_zones_by_name zone_find_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -488,6 +489,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_list_name', 'list xnu zones name'],
 		[ 'zone_find_index', 'list index of matching zone'],
 		[ 'zone_show_logged_zone', 'show all logged zones enable by "-zlog=<zone_name>'],
+		[ 'zone_triage', 'detect and print trace log for use after free/double free'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3283,6 +3285,31 @@ def cmd_xnu_zshow_logged_zone(debugger, command, result, dict):
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	XNU_ZONES.show_zone_being_logged()
+
+def cmd_xnu_zone_triage(debugger, command, result, _dict):
+	global XNU_ZONES
+	if not XNU_ZONES:
+		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+
+	args = command.split(' ')
+	if len(args) < 2:
+		print('zone_triage: <zone_idx> <element_ptr>')
+		return False
+	
+	zone_idx = evaluate(args[0])
+	elem_ptr = evaluate(args[1])
+
+	if zone_idx >= len(XNU_ZONES):
+		print('[!] Invalid zone id')
+		return False
+	
+	if not elem_ptr:
+		print('[!] Invalid elem_ptr')
+		return False
+	
+	XNU_ZONES.zone_find_stack_elem(zone_idx, elem_ptr)
+
+	return True
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	xnu_print_all_kexts()
