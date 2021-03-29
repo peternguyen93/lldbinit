@@ -5,7 +5,6 @@ Author : peternguyen
 
 import lldb
 from utils import *
-from xnu_structures import *
 
 EMBEDDED_PANIC_MAGIC = 0x46554E4B
 EMBEDDED_PANIC_STACKSHOT_SUCCEEDED_FLAG = 0x02
@@ -16,49 +15,29 @@ MACOS_PANIC_STACKSHOT_SUCCEEDED_FLAG = 0x04
 AURR_PANIC_MAGIC = 0x41555252
 AURR_PANIC_VERSION = 1
 
-## lldb cmd functions ##
-
-def xnu_print_all_kexts():
-	kext_infos = xnu_get_all_kexts()
-
-	for kext_info in kext_infos:
-		kext_name = bytes(kext_info.name).strip(b'\x00').decode('utf-8')
-		uuid_str = GetUUIDSummary(bytes(kext_info.uuid))
-		base_address = hex(kext_info.address)
-
-		print(f'+ {kext_name}\t{uuid_str}\t\t{base_address}')
-
 ## main functions ##
+
 def xnu_get_all_kexts():
-	target = get_target()
+	g_load_kext_summaries = ESBValue('gLoadedKextSummaries')
+	base_address = g_load_kext_summaries.GetIntValue()
+	entry_size = g_load_kext_summaries.entry_size.GetIntValue()
+	kext_summaries_ptr = base_address + size_of('OSKextLoadedKextSummaryHeader')
 
-	# get linked list of loaded kexts
-	kext_summaries = target.FindGlobalVariables('gLoadedKextSummaries', 1).GetValueAtIndex(0)
-	if not kext_summaries.IsValid():
-		print('[!] This command only support for XNU kernel debugging.')
-		return []
+	kexts = []
+	
+	for i in range(g_load_kext_summaries.numSummaries.GetIntValue()):
+		kext_summary_at = ESBValue.initWithAddressType(kext_summaries_ptr, 'OSKextLoadedKextSummary *')
+		
+		kext_name = kext_summary_at.name.GetSummary()
+		kext_address = kext_summary_at.address.GetIntValue()
+		kext_size = kext_summary_at.size.GetValue()
+		kext_uuid_addr = kext_summary_at.uuid.GetLoadAddress()
+		kext_uuid = GetUUIDSummary(read_mem(kext_uuid_addr, size_of('uuid_t')))
 
-	base_address = int(kext_summaries.GetValue(), 16)
-
-	raw_data = read_mem(base_address, sizeof(OSKextLoadedKextSummaryHeader))
-	if len(raw_data) < sizeof(OSKextLoadedKextSummaryHeader):
-		print('[!] Read OSKextLoadedKextSummaryHeader error.')
-		return []
-
-	kext_summary_header = OSKextLoadedKextSummaryHeader.from_buffer_copy(raw_data)
-
-	entry_size = kext_summary_header.entry_size
-	kextInfos = []
-	for i in range(kext_summary_header.numSummaries):
-		raw_data = read_mem(base_address + 0x10 + i * entry_size, entry_size)
-		if len(raw_data) < entry_size:
-			print('[!] Read OSKextLoadedKextSummary error.')
-			return []
-
-		kextinfo = OSKextLoadedKextSummary.from_buffer_copy(raw_data)
-		kextInfos.append(kextinfo)
-
-	return kextInfos
+		kexts.append((kext_name, kext_uuid, kext_address, kext_size))
+		kext_summaries_ptr += entry_size
+	
+	return kexts
 
 def xnu_get_kext_base_address(kext_name):
 	kext_infos = xnu_get_all_kexts()
@@ -66,9 +45,9 @@ def xnu_get_kext_base_address(kext_name):
 		return 0
 
 	for kext_info in kext_infos:
-		mod_kext_name = bytes(kext_info.name).strip(b'\x00').decode('utf-8')
+		mod_kext_name = bytes(kext_info[0]).strip(b'\x00').decode('utf-8')
 		if kext_name in mod_kext_name:
-			return kext_info.address
+			return kext_info.address[2]
 
 	return 0
 
@@ -77,38 +56,34 @@ def xnu_get_kdp_pmap_addr(target):
 	return address_of(target, kdp_pmap_var)
 
 def xnu_write_task_kdp_pmap(target, task):
-	kdp_pmap_addr = xnu_get_kdp_pmap_addr(target)
-	if kdp_pmap_addr == 0xffffffffffffffff:
+	kdp_pmap = ESBValue('kdp_pmap')
+	if not kdp_pmap.IsValid():
 		print('[!] kdp_pmap not found')
 		return False
 
-	my_task = cast_address_to(target, 'my_task', task, 'task')
-	if my_task == None:
-		print(f'[!] Invalid task address {hex(task)}')
-		return False
+	task = task.CastTo('task *')
+	kdp_pmap_addr = kdp_pmap.GetLoadAddress()
+	pmap = task.map.pmap
 
-	# write target pmap address to kdp_pmap to resolve userspace address
-	pmap = my_task.GetChildMemberWithName('map').GetChildMemberWithName('pmap').GetValue()
-	pmap = int(pmap, 16)
-
-	if not write_mem(kdp_pmap_addr, pack('<Q', pmap)):
+	if not write_mem(kdp_pmap_addr, pack('<Q', pmap.GetIntValue())):
 		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
 		return False
 
 	return True
 
 def xnu_reset_kdp_pmap(target):
-	kdp_pmap_addr = xnu_get_kdp_pmap_addr(target)
-	if kdp_pmap_addr == 0xffffffffffffffff:
+	kdp_pmap = ESBValue('kdp_pmap')
+	if not kdp_pmap.IsValid():
 		print('[!] kdp_pmap not found')
 		return False
+	
+	kdp_pmap_addr = kdp_pmap.GetLoadAddress()
 
 	if not write_mem(kdp_pmap_addr, pack('<Q', 0)):
 		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
 		return False
 
 	return True
-
 
 def xnu_read_user_address(target, task, address, size):
 	out = ''
@@ -146,90 +121,80 @@ def xnu_write_user_address(target, task, address, value):
 	return True
 
 def xnu_search_process_by_name(search_proc_name):
-	target = get_target()
-	allproc = target.FindGlobalVariables('allproc', 1).GetValueAtIndex(0)
+	allproc = ESBValue('allproc')
 
 	if not allproc.IsValid():
 		print('[!] This command only support for XNU kernel debugging.')
 		return None
 
-	allproc_ptr = allproc.GetChildMemberWithName('lh_first')
-	error = lldb.SBError()
+	allproc_ptr = allproc.lh_first
 
 	match_proc = None
-	while int(allproc_ptr.GetValue(), 16):
-		proc_name = allproc_ptr.GetChildMemberWithName('p_name')
-		cstr_proc_name = proc_name.GetData().GetString(error, 0)
-		if cstr_proc_name == search_proc_name:
+	while allproc_ptr.GetIntValue():
+		if allproc_ptr.p_name.GetStrValue() == search_proc_name:
 			match_proc = allproc_ptr 
 			break
 
-		allproc_ptr = allproc_ptr.GetChildMemberWithName('p_list').GetChildMemberWithName('le_next')
+		allproc_ptr = allproc_ptr.p_list.le_next
 
 	return match_proc
 
 def xnu_list_all_process():
-	target = get_target()
-	allproc = target.FindGlobalVariables('allproc', 1).GetValueAtIndex(0)
-
+	allproc = ESBValue('allproc')
 	if not allproc.IsValid():
 		print('[!] This command only support for XNU kernel debugging.')
 		return None
 
-	allproc_ptr = allproc.GetChildMemberWithName('lh_first')
-	error = lldb.SBError()
+	allproc_ptr = allproc.lh_first
 
-	while int(allproc_ptr.GetValue(), 16):
-		proc_name = allproc_ptr.GetChildMemberWithName('p_name')
-		cstr_proc_name = proc_name.GetData().GetString(error, 0)
-		p_pid = allproc_ptr.GetChildMemberWithName('p_pid').GetValue()
-
-		print(f'+ {p_pid} - {cstr_proc_name} - {allproc_ptr.GetValue()}')
-
-		allproc_ptr = allproc_ptr.GetChildMemberWithName('p_list').GetChildMemberWithName('le_next')
+	while allproc_ptr.GetIntValue():
+		proc_name = allproc_ptr.p_name.GetStrValue()
+		p_pid = allproc_ptr.p_pid.GetIntValue()
+		print(f'+ {p_pid} - {proc_name} - {allproc_ptr.GetValue()}')
+		allproc_ptr = allproc_ptr.p_list.le_next
 
 def xnu_showbootargs(target):
-	pe_state = findGlobalVariable('PE_state')
-	if not pe_state:
-		return ''
-
-	boot_args = pe_state.GetChildMemberWithName('bootArgs')
-	boot_args = cast_address_to(target, 'my_boot_args', int(boot_args.GetValue(), 16), 'boot_args')
-	commandline = boot_args.GetChildMemberWithName('CommandLine')
-	
-	return read_str(commandline.load_addr, 1024).decode('utf-8')
+	pe_state = ESBValue('PE_state')
+	boot_args = pe_state.bootArgs.CastTo('boot_args *')
+	commandline = boot_args.CommandLine
+	return read_str(commandline.GetLoadAddress(), 1024).decode('utf-8')
 
 def xnu_panic_log(target):
-	panic_info = findGlobalVariable('panic_info')
-	if not panic_info:
+	panic_info = ESBValue('panic_info')
+	if not panic_info.IsValid():
 		return b''
 
-	mph_magic = panic_info.GetChildMemberWithName('mph_magic')
+	mph_magic = panic_info.mph_magic
 	if not mph_magic.IsValid():
 		print('[!] Unable to find mph_magic in panic_info')
 		return b''
 	
-	mph_magic = int(mph_magic.GetValue())
-	if mph_magic != MACOS_PANIC_MAGIC:
+	if mph_magic.GetIntValue() != MACOS_PANIC_MAGIC:
 		print('[!] Currently support parse MACOS_PANIC')
 		return b''
 	
-	panic_buf = int(panic_info.GetValue(), 16)
+	panic_buf = panic_info.GetIntValue()
 
-	panic_log_begin_offset = panic_info.GetChildMemberWithName('mph_panic_log_offset')
-	panic_log_begin_offset = int(panic_log_begin_offset.GetValue())
-	panic_log_len = panic_info.GetChildMemberWithName('mph_panic_log_len')
-	panic_log_len = int(panic_log_len.GetValue())
-	other_log_begin_offset = panic_info.GetChildMemberWithName('mph_other_log_offset')
-	other_log_begin_offset = int(other_log_begin_offset.GetValue())
-	other_log_len = panic_info.GetChildMemberWithName('mph_other_log_len')
-	other_log_len = int(other_log_len.GetValue())
+	panic_log_begin_offset = panic_info.mph_panic_log_offset.GetIntValue()
+	panic_log_len = panic_info.mph_panic_log_len.GetIntValue()
+	other_log_begin_offset = panic_info.mph_other_log_offset.GetIntValue()
+	other_log_len = panic_info.mph_other_log_len.GetIntValue()
 
-	debug_buf_ptr = findGlobalVariable('debug_buf_ptr')
-	if not debug_buf_ptr:
-		return b''
+	# panic_log_begin_offset = panic_info.GetChildMemberWithName('mph_panic_log_offset')
+	# panic_log_begin_offset = int(panic_log_begin_offset.GetValue())
+	# panic_log_len = panic_info.GetChildMemberWithName('mph_panic_log_len')
+	# panic_log_len = int(panic_log_len.GetValue())
+	# other_log_begin_offset = panic_info.GetChildMemberWithName('mph_other_log_offset')
+	# other_log_begin_offset = int(other_log_begin_offset.GetValue())
+	# other_log_len = panic_info.GetChildMemberWithName('mph_other_log_len')
+	# other_log_len = int(other_log_len.GetValue())
 
-	cur_debug_buf_ptr_offset = int(debug_buf_ptr.GetValue(), 16) - panic_buf
+	# debug_buf_ptr = findGlobalVariable('debug_buf_ptr')
+	# if not debug_buf_ptr:
+	# 	return b''
+	debug_buf_ptr = ESBValue('debug_buf_ptr')
+
+	cur_debug_buf_ptr_offset = debug_buf_ptr.GetIntValue() - panic_buf
 	if other_log_begin_offset != 0 and (other_log_len == 0 or other_log_len < (cur_debug_buf_ptr_offset - other_log_begin_offset)):
 		other_log_len = cur_debug_buf_ptr_offset - other_log_begin_offset
 	
@@ -250,16 +215,16 @@ class XNUZones:
 		self.zone_list = []
 		self.target = target
 
-		zone_array = findGlobalVariable('zone_array')
-		if not zone_array:
+		zone_array = ESBValue('zone_array')
+		if not zone_array.IsValid():
 			return
 		
-		num_zones = findGlobalVariable('num_zones')
-		if not num_zones:
+		num_zones = ESBValue('num_zones')
+		if not num_zones.IsValid():
 			return
 
-		for i in range(int(num_zones.GetValue())):
-			self.zone_list.append(zone_array.GetChildAtIndex(i).load_addr)
+		for i in range(num_zones.GetIntValue()):
+			self.zone_list.append(zone_array[i].GetLoadAddress())
 		
 		self.pointer_size = get_pointer_size()
 	
@@ -276,35 +241,30 @@ class XNUZones:
 			return None
 		
 		# cast to 'zone *'
-		return cast_address_to(self.target, 'my_boot_args', self.zone_list[idx], 'zone')
-	
-	def getZoneName(self, zone):
-		try:
-			z_name = zone.GetChildMemberWithName('z_name')
-			return z_name.GetSummary()
-		except AttributeError:
-			return ''
+		return ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
 	
 	def getZoneBTLog(self, zone):
 		try:
-			zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
-			return zlog_btlog
+			# zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
+			# return zlog_btlog
+			return zone.zlog_btlog
 		except AttributeError:
 			return ''
 
 	def showallzones_name(self):
 		zone_names = []
 		for i in range(len(self)):
-			zone = self[i]
-			z_name = zone.GetChildMemberWithName('z_name')
-			zone_names.append(z_name.GetSummary())
+			# zone = self[i]
+			# z_name = zone.GetChildMemberWithName('z_name')
+			zone_names.append(self[i].z_name.GetSummary())
 		
 		return zone_names
 	
 	def findzone_by_name(self, name):
 		for i in range(len(self)):
 			zone = self[i]
-			z_name = zone.GetChildMemberWithName('z_name')
+			# z_name = zone.GetChildMemberWithName('z_name')
+			z_name = zone.z_name
 			if z_name == name:
 				return zone
 		
@@ -314,32 +274,35 @@ class XNUZones:
 		zones = []
 		for i in range(len(self)):
 			zone = self[i]
-			z_name = zone.GetChildMemberWithName('z_name')
+			# z_name = zone.GetChildMemberWithName('z_name')
+			z_name = zone.z_name
 			if z_name == name:
 				zones.append((i, zone))
 		return zones
 	
 	def is_zonelogging(self, zone_idx):
 		zone = self[zone_idx]
-		zone_logging = zone.GetChildMemberWithName('zlog_btlog')
-		return bool(int(zone_logging.GetValue(), 16) != 0)
+		# zone_logging = zone.GetChildMemberWithName('zlog_btlog')
+		# zone_logging = zone.zlog_btlog
+		return zone.zlog_btlog.GetIntValue() != 0
 	
 	def show_zone_being_logged(self):
 		for i in range(len(self)):
 			zone = self[i]
-			zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
-			zone_name = self.getZoneName(zone)
-			if int(zlog_btlog.GetValue(), 16) != 0:
-				print(f'- zone_array[{i}]: {zone_name} log at {zlog_btlog}')
+			# zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
+			zlog_btlog = zone.zlog_btlog
+			zone_name = zone.z_name.GetSummary()
+			if zlog_btlog.GetIntValue() != 0:
+				print(f'- zone_array[{i}]: {zone_name} log at {zlog_btlog.GetValue()}')
 	
 	def find_logged_zone_by_name(self, name):
 		for i in range(len(self)):
 			zone = self[i]
-			zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
-			zlog_btlog = int(zlog_btlog.GetValue(), 16)
-			zone_name = self.getZoneName(zone)
+			# zlog_btlog = zone.GetChildMemberWithName('zlog_btlog')
+			zlog_btlog = zone.zlog_btlog
+			zone_name = zone.z_name.GetSummary()
 
-			if zone_name == name and zlog_btlog:
+			if zone_name == name and zlog_btlog.GetIntValue():
 				return zone
 		
 		return None
@@ -355,54 +318,45 @@ class XNUZones:
 			double-frees readily apparent.
 		"""
 
-		log_records = findGlobalVariable('log_records')
-		log_records = int(log_records.GetValue())
-		corruption_debug_flag = findGlobalVariable('corruption_debug_flag')
-		if corruption_debug_flag.GetValue() == 'true':
-			corruption_debug_flag = 1
-		else:
-			corruption_debug_flag = 0 
+		log_records = ESBValue('log_records')
+		corruption_debug_flag = ESBValue('corruption_debug_flag')
 
-		if not log_records or not corruption_debug_flag:
+		if not log_records.GetIntValue() or not corruption_debug_flag.GetBoolValue():
 			print("[!] Zone logging with corruption detection not enabled. Add '-zc zlog=<zone name>' to boot-args.")
 			return False
 		
-		btlog_ptr = cast_address_to(self.target, 'blog_ptr', int(self.getZoneBTLog(self[zone_idx]).GetValue(), 16), 'btlog_t')
+		zone = self[zone_idx]
+		btlog_ptr = zone.zlog_btlog.CastTo('btlog_t *')
+		
 		target_element = elem
 
-		btrecord_size = btlog_ptr.GetChildMemberWithName('btrecord_size')
-		btrecord_size = int(btrecord_size.GetValue())
-
-		btrecords = btlog_ptr.GetChildMemberWithName('btrecords')
-		btrecords = int(btrecords.GetValue())
-
-		depth = btlog_ptr.GetChildMemberWithName('btrecord_btdepth')
-		depth = int(depth.GetValue())
+		btrecord_size = btlog_ptr.btrecord_size.GetIntValue()
+		btrecords = btlog_ptr.btrecords.GetIntValue()
+		depth = btlog_ptr.btrecord_btdepth.GetIntValue()
 
 		prev_op = -1
 		scan_items = 0
 
-		elem_linkage_un = btlog_ptr.GetChildMemberWithName('elem_linkage_un')
-		element_hash_queue = elem_linkage_un.GetChildMemberWithName('element_hash_queue')
-		hashelem = element_hash_queue.GetChildMemberWithName('tqh_first')
-		hashelem = cast_address_to(self.target, 'hashelem', int(hashelem.GetValue(), 16), 'btlog_element_t')
+		element_hash_queue = btlog_ptr.elem_linkage_un.element_hash_queue
+		hashelem = element_hash_queue.tqh_first
+		hashelem = hashelem.CastTo('btlog_element_t *')
 
 		if (target_element >> 32) != 0:
 			target_element = target_element ^ 0xFFFFFFFFFFFFFFFF
 		else:
 			target_element = target_element ^ 0xFFFFFFFF
 
-		while int(hashelem.GetValue(), 16) != 0:
-			s_elem = hashelem.GetChildMemberWithName('elem')
-			s_elem = int(s_elem.GetValue())
-
-			if s_elem == target_element:
-				recindex = hashelem.GetChildMemberWithName('recindex')
-				recindex = int(recindex.GetValue())
+		while hashelem.GetIntValue() != 0:
+			# s_elem = hashelem.GetChildMemberWithName('elem')
+			# s_elem = int(s_elem.GetValue())
+			if hashelem.elem.GetIntValue() == target_element:
+				# recindex = hashelem.GetChildMemberWithName('recindex')
+				# recindex = int(recindex.GetValue())
+				recindex = hashelem.recindex.GetIntValue()
 
 				recoffset = recindex * btrecord_size
-				record = cast_address_to(self.target, 'record', btrecords + recoffset, 'btlog_record_t')
-				record_operation = int(record.GetChildMemberWithName('operation').GetValue())
+				record = ESBValue.initWithAddressType(btrecords + recoffset, 'btlog_record_t *')
+				record_operation = record.operation.GetIntValue()
 
 				out_str = ('-' * 8)
 				if record_operation == 1:
@@ -422,9 +376,11 @@ class XNUZones:
 				prev_op = record_operation
 				scan_items = 0
 
-			element_hash_link = hashelem.GetChildMemberWithName('element_hash_link')
-			hashelem = element_hash_link.GetChildMemberWithName('tqe_next')
-			hashelem = cast_address_to(self.target, 'hashelem', int(hashelem.GetValue(), 16), 'btlog_element_t')
+			# element_hash_link = hashelem.GetChildMemberWithName('element_hash_link')
+			# hashelem = element_hash_link.GetChildMemberWithName('tqe_next')
+			# hashelem = cast_address_to(self.target, 'hashelem', int(hashelem.GetValue(), 16), 'btlog_element_t')
+			hashelem = hashelem.element_hash_link.tqe_next
+			hashelem = hashelem.CastTo('btlog_element_t *')
 
 			scan_items += 1
 			if scan_items % 100 == 0:
@@ -444,8 +400,9 @@ class XNUZones:
 		if not zstack_record:
 			return "Zstack record none!"
 		
-		zstack_record_bt = zstack_record.GetChildMemberWithName('bt')
-		pc_array = read_mem(zstack_record_bt.load_addr, depth * self.pointer_size)
+		# zstack_record_bt = zstack_record.GetChildMemberWithName('bt')
+		zstack_record_bt = zstack_record.bt
+		pc_array = read_mem(zstack_record_bt.GetLoadAddress(), depth * self.pointer_size)
 
 		while frame < depth:
 			frame_pc = unpack('<Q', pc_array[frame*8 : (frame + 1) * 8])[0]

@@ -518,6 +518,8 @@ def size_of(struct_name):
 	
 	return -1
 
+# overwrites SBValue for easier to access struct member
+
 def findGlobalVariable(name):
 	target = get_target()
 	sbvar = target.FindGlobalVariables(name, 1).GetValueAtIndex(0)
@@ -525,6 +527,87 @@ def findGlobalVariable(name):
 		print(f'[!] Unable to find {name}, please boot xnu with development kernel Or load binary has debug infos')
 		return None
 	return sbvar
+
+class ESBValue(object):
+	def __init__(self, var_name, var_type=''):
+		super().__init__()
+		if var_name == 'classcall':
+			self.sb_value = None
+		else:
+			self.sb_value = findGlobalVariable(var_name)
+
+		if var_type and self.sb_value:
+			address = int(self.sb_value.GetValue(), 16)
+			self.sb_value = cast_address_to(get_target(), 'new_var', address, var_type)
+	
+	@classmethod
+	def initWithSBValue(cls, sb_value):
+		new_esbvalue = cls('classcall')
+		new_esbvalue.sb_value = sb_value
+		return new_esbvalue
+	
+	@classmethod
+	def initWithAddressType(cls, address, var_type):
+		target = get_target()
+		new_esbvalue = cls('classcall')
+		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
+		return new_esbvalue
+	
+	def __getattr__(self, name):
+		if name == 'sb_value':
+			return self.sb_value
+
+		if self.sb_value == None:
+			return None
+		
+		return ESBValue.initWithSBValue(self.GetChildMemberWithName(name))
+	
+	def GetValue(self):
+		return self.sb_value.GetValue()
+	
+	def GetSummary(self):
+		return self.sb_value.GetSummary()
+	
+	def GetIntValue(self):
+		value = self.GetValue()
+		if value.startswith('0x'):
+			return int(value, 16)
+		return int(value)
+	
+	def GetBoolValue(self):
+		return True if self.GetValue() == 'true' else False
+	
+	def GetStrValue(self):
+		return self.GetSummary()[1:-1] # skip double quote in "data"
+	
+	def GetLoadAddress(self):
+		return self.sb_value.GetLoadAddress()
+	
+	def GetAddress(self):
+		return self.sb_value.GetAddress()
+	
+	def GetChildMemberWithName(self, child_name):
+		return self.sb_value.GetChildMemberWithName(child_name)
+	
+	def GetChildAtIndex(self, idx):
+		return self.sb_value.GetChildAtIndex(idx)
+	
+	def IsValid(self):
+		return self.sb_value.IsValid()
+	
+	def __getitem__(self, idx):
+		return ESBValue.initWithSBValue(self.GetChildAtIndex(idx))
+	
+	def CastTo(self, var_type, use_load_addr = False):
+		if use_load_addr:
+			address = self.GetLoadAddress()
+		else:
+			address = self.GetIntValue()
+		
+		target = get_target()
+		new_sb = target.CreateValueFromExpression('new_var', f'({var_type}){address}')
+		self.sb_value = new_sb
+		return self
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory

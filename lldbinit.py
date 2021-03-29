@@ -388,7 +388,7 @@ def __lldb_init_module(debugger, internal_dict):
 
 	# xnu kernel debug commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_breakpoint kbp", res)
+	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_breakpoint kbp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_to_offset ktooff", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_all_process showallproc", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_search_process_by_name showproc", res)
@@ -400,7 +400,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_panic_log panic_log", res)
 
 	# xnu zone commands
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone_name zone_list_name", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone zone_list", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_zones_by_name zone_find_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
@@ -486,7 +486,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'showbootargs', 'show boot-args of macOS'],
 		[ 'kdp-reboot', 'reboot the remote machine'],
 		[ 'panic_log', 'show panic log'],
-		[ 'zone_list_name', 'list xnu zones name'],
+		[ 'zone_list', 'list xnu zones name'],
 		[ 'zone_find_index', 'list index of matching zone'],
 		[ 'zone_show_logged_zone', 'show all logged zones enable by "-zlog=<zone_name>'],
 		[ 'zone_triage', 'detect and print trace log for use after free/double free'],
@@ -3252,7 +3252,7 @@ def cmd_xnu_panic_log(debugger, command, result, dict):
 
 # xnu zones command
 
-def cmd_xnu_list_zone_name(debugger, command, result, dict):
+def cmd_xnu_list_zone(debugger, command, result, dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
@@ -3260,8 +3260,9 @@ def cmd_xnu_list_zone_name(debugger, command, result, dict):
 	zone_names = XNU_ZONES.showallzones_name()
 
 	print('[+] Zones:')
+	pad_size = len(str(len(zone_names)))
 	for i, zone_name in enumerate(zone_names):
-		print(f'- {i} | {zone_name}')
+		print(f'- {i:{pad_size}} | {zone_name}')
 	
 def cmd_xnu_show_zones_by_name(debugger, command, result, dict):
 	global XNU_ZONES
@@ -3276,8 +3277,9 @@ def cmd_xnu_show_zones_by_name(debugger, command, result, dict):
 	zones = XNU_ZONES.findzone_by_names(args[0])
 
 	print('[+] Zones:')
+	pad_size = len(str(len(zones)))
 	for i, zone in zones:
-		print(f'- {i} | {XNU_ZONES.getZoneName(zone)}')
+		print(f'- {i:{pad_size}} | {XNU_ZONES.getZoneName(zone)}')
 
 def cmd_xnu_zshow_logged_zone(debugger, command, result, dict):
 	global XNU_ZONES
@@ -3312,7 +3314,13 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	return True
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
-	xnu_print_all_kexts()
+	kexts = xnu_get_all_kexts()
+
+	longest_kext_name = len(max(kexts, key=lambda x: len(x[0]))[0])
+	
+	print('-- Loaded kexts:')
+	for kext_name, kext_uuid, kext_address, kext_size in kexts:
+		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t{hex(kext_address)}\t{kext_size}')
 
 def cmd_xnu_breakpoint(debugger, command, result, dict):
 	args = command.split(' ')
@@ -3366,13 +3374,10 @@ def cmd_xnu_search_process_by_name(debugger, command, result, dict):
 		print(f'[!] Couldn\'t found your process {proc_name}')
 		return
 
-	error = lldb.SBError()
+	proc_name = xnu_proc.p_name.GetStrValue()
+	p_pid = xnu_proc.p_pid.GetValue()
 
-	proc_name = xnu_proc.GetChildMemberWithName('p_name')
-	cstr_proc_name = proc_name.GetData().GetString(error, 0)
-	p_pid = xnu_proc.GetChildMemberWithName('p_pid').GetValue()
-
-	print(f'+ {p_pid} - {cstr_proc_name} - {xnu_proc.GetValue()}')
+	print(f'+ {p_pid} - {proc_name} - {xnu_proc.GetValue()}')
 
 def cmd_xnu_read_usr_addr(debugger, command, result, dict):
 	args = command.split(' ')
@@ -3381,19 +3386,18 @@ def cmd_xnu_read_usr_addr(debugger, command, result, dict):
 		return
 
 	process_name = args[0]
-	proc_struct_addr = xnu_search_process_by_name(process_name)
-	if proc_struct_addr == None:
+	proc = xnu_search_process_by_name(process_name)
+	if proc == None:
 		print('[!] Process does not found.')
 		return
 	
-	task_ptr = int(proc_struct_addr.GetChildMemberWithName('task').GetValue(), 16)
 	user_space_addr = evaluate(args[1])
 	try:
 		size = int(args[2])
 	except (TypeError, ValueError):
 		size = 0x20
 
-	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), task_ptr, user_space_addr, size)
+	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), proc.task, user_space_addr, size)
 	print(hexdump(user_space_addr, raw_data, " ", 16))
 
 def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
@@ -3406,13 +3410,12 @@ def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
 		print('setkdp <process name>')
 		return
 	
-	proc_t_ptr = xnu_search_process_by_name(args[0])
-	if proc_t_ptr == None:
+	target_proc = xnu_search_process_by_name(args[0])
+	if target_proc == None:
 		print(f'[!] Process {args[0]} does not found')
 		return
 	
-	task_ptr = task_ptr = int(proc_t_ptr.GetChildMemberWithName('task').GetValue(), 16)
-	if xnu_write_task_kdp_pmap(debugger.GetSelectedTarget(), task_ptr):
+	if xnu_write_task_kdp_pmap(debugger.GetSelectedTarget(), target_proc.task):
 		print('[+] Set kdp_pmap ok.')
 	else:
 		print('[!] Set kdp_pmap failed.')
