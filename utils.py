@@ -570,15 +570,23 @@ class ESBValue(object):
 	
 	def GetIntValue(self):
 		value = self.GetValue()
+		if not value:
+			return 0
 		if value.startswith('0x'):
 			return int(value, 16)
 		return int(value)
+	
+	def Dereference(self):
+		return ESBValue.initWithSBValue(self.sb_value.Dereference())
 	
 	def GetBoolValue(self):
 		return True if self.GetValue() == 'true' else False
 	
 	def GetStrValue(self):
-		return self.GetSummary()[1:-1] # skip double quote in "data"
+		summary = self.GetSummary()
+		if summary and 'no value available' not in summary:
+			return summary[1:-1] # skip double quote in "data"
+		return ''
 	
 	def GetLoadAddress(self):
 		return self.sb_value.GetLoadAddress()
