@@ -2136,12 +2136,7 @@ def cmd_xinfo(debugger, command, result, dict):
 		module_name+= '.' + xinfo['section_name']
 		offset = xinfo['abs_offset']
 
-	symbol_name = ''
-	sym_addr = lldb.SBAddress(address, cur_target)
-	symbol = sym_addr.GetSymbol()
-	if symbol.name:
-		symbol_name = symbol.name
-
+	symbol_name = resolve_symbol_name(address)
 	print(COLORS['YELLOW'] + '- {0} : {1} ({2})'.format(module_name, hex(offset), symbol_name) + COLORS['RESET'])
 
 def cmd_telescope(debugger, command, result, dict):
@@ -2164,14 +2159,15 @@ def cmd_telescope(debugger, command, result, dict):
 
 	cur_target = debugger.GetSelectedTarget()
 	process = debugger.GetSelectedTarget().GetProcess()
+	pointer_size = get_pointer_size()
 
 	error_ref = lldb.SBError()
-	memory = process.ReadMemory(address, length * 8, error_ref)
+	memory = process.ReadMemory(address, length * pointer_size, error_ref)
 	if error_ref.Success():
 		
 		# print telescope memory
 		for i in range(length):
-			ptr_value = unpack('<Q', memory[i*8:(i + 1)*8])[0]
+			ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
 
 			print('{0}{1}{2}:\t'.format(COLORS['CYAN'], hex(address + i*8), COLORS['RESET']), end='')
 
@@ -2770,7 +2766,7 @@ def disassemble(start_address, count):
 		symbol_name = instructions_file[count].addr.GetSymbol().GetName()
 		# if there is no symbol just display module where current instruction is
 		# also get rid of unnamed symbols since they are useless
-		if symbol_name == None or "___lldb_unnamed_symbol" in symbol_name:
+		if not symbol_name or "___lldb_unnamed_symbol" in symbol_name:
 			if count == 0:
 				if CONFIG_ENABLE_COLOR == 1:
 					color(COLOR_SYMBOL_NAME)
@@ -2778,7 +2774,7 @@ def disassemble(start_address, count):
 					color("RESET")
 				else:
 					output("@ {}:".format(module_name) + "\n")            
-		elif symbol_name != None:
+		elif symbol_name:
 			# print the first time there is a symbol name and save its interval
 			# so we don't print again until there is a different symbol
 			cur_load_addr = file_inst.GetAddress().GetLoadAddress(target)
@@ -2845,7 +2841,7 @@ def disassemble(start_address, count):
 		if is_aarch64() and instructions_file[count].GetMnemonic(target) in ('bl', 'b'):
 			indirect_addr = get_indirect_flow_target(memory_addr)
 			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
-			dyld_resolve_name = lldb.SBAddress(dyld_call_addr,target).GetSymbol().GetName()
+			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
 		
 		# comment = ""
 		# if file_inst.comment != "":
@@ -2871,10 +2867,11 @@ def disassemble(start_address, count):
 					flow_module_name = get_module_name(flow_addr)
 					symbol_info = ""
 					# try to solve the symbol for the target address
-					target_symbol_name = lldb.SBAddress(flow_addr,target).GetSymbol().GetName()
+					# target_symbol_name = lldb.SBAddress(flow_addr,target).GetSymbol().GetName()
+					target_symbol_name = resolve_symbol_name(flow_addr)
 					# if there is a symbol append to the string otherwise
 					# it will be empty and have no impact in output
-					if target_symbol_name != None:
+					if target_symbol_name:
 						symbol_info = target_symbol_name + " @ "
 					
 					if comment == "":
@@ -3801,12 +3798,10 @@ def get_ret_address():
 
 def is_sending_objc_msg():
 	err = lldb.SBError()
-	target = get_target()
 
 	call_addr = get_indirect_flow_target(get_current_pc())
-	sym_addr = lldb.SBAddress(call_addr, target)
-	symbol = sym_addr.GetSymbol()
-	return symbol.name == "objc_msgSend"
+	symbol_name = resolve_symbol_name(call_addr)
+	return symbol_name == "objc_msgSend"
 
 # XXX: x64 only
 def display_objc():
@@ -3842,20 +3837,19 @@ def display_objc():
 		output(selector[0].decode('utf-8'))
 
 def display_indirect_flow():
-	target = get_target()
 	pc_addr = get_current_pc()
 	mnemonic = get_mnemonic(pc_addr)
 
 	if ("ret" in mnemonic):
 		indirect_addr = get_ret_address()
-		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
+		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
 		output("\n")
 		return
 	
 	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
 		# we need to identify the indirect target address
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
+		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3864,7 +3858,7 @@ def display_indirect_flow():
 	
 	if ("br" == mnemonic) or ("bl" == mnemonic) or ("b" == mnemonic):
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, lldb.SBAddress(indirect_addr, target).GetSymbol().name))
+		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3921,19 +3915,13 @@ def get_module_name(src_addr):
 		return module_name
 
 def get_objectivec_selector_at(call_addr):
-	target = get_target()
-	
-	sym_addr = lldb.SBAddress(call_addr, target)
-	symbol = sym_addr.GetSymbol()
-	if symbol == None:
-		return ""
-	
-	if symbol.name == None:
-		return ""
+	symbol_name = resolve_symbol_name(call_addr)
+	if not symbol_name:
+		return ''
 
 	# XXX: add others?
-	if (not symbol.name.startswith("objc_msgSend")) and \
-			(symbol.name not in ('objc_alloc', 'objc_opt_class')):
+	if (not symbol_name.startswith("objc_msgSend")) and \
+			(symbol_name not in ('objc_alloc', 'objc_opt_class')):
 		return ""
 	
 	options = lldb.SBExpressionOptions()
@@ -3949,7 +3937,7 @@ def get_objectivec_selector_at(call_addr):
 	if className_summary:
 		className = className_summary.strip('"')
 
-		if symbol.name.startswith("objc_msgSend"):
+		if symbol_name.startswith("objc_msgSend"):
 			if is_x64():
 				selector_addr = get_gp_register("rsi")
 			else:
@@ -3963,7 +3951,7 @@ def get_objectivec_selector_at(call_addr):
 			else:
 				return "[" + className + "]"
 		else:
-			return "{0}({1})".format(symbol.name, className)
+			return "{0}({1})".format(symbol_name, className)
 	
 	return ""
 
