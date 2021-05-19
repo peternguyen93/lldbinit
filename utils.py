@@ -281,6 +281,14 @@ def find_module_by_name(target, module_name):
 def get_text_section(module):
 	return module.FindSection('__TEXT')
 
+def resolve_symbol_name(address):
+	target = get_target()
+	sb_addr = lldb.SBAddress(address, target)
+	addr_sym = sb_addr.GetSymbol()
+	if addr_sym.IsValid():
+		return addr_sym.GetName()
+	return ''
+
 def resolve_mem_map(target, addr):
 	found = False
 

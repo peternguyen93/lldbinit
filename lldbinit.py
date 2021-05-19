@@ -2183,15 +2183,19 @@ def cmd_telescope(debugger, command, result, dict):
 				module_name+= '.' + xinfo['section_name']
 
 				if offset > -1:
+					symbol_name = resolve_symbol_name(ptr_value)
 					if xinfo['section_name'] == '__TEXT':
 						# this address is executable
-						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
-								COLORS['RED'], hex(ptr_value), COLORS['RESET'],
-								COLORS['BOLD'], module_name, hex(offset), COLORS['RESET']
-							))
+						color = COLORS['RED']
+					else:
+						color = COLORS['MAGENTA']
+
+					if symbol_name:
+						print('{0}{1}{2} -> {3}"{4}"{5}'.format(color, hex(ptr_value), COLORS['RESET'], 
+																COLORS['BOLD'], symbol_name, COLORS['RESET']))
 					else:
 						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
-								COLORS['MAGENTA'], hex(ptr_value), COLORS['RESET'],
+								color, hex(ptr_value), COLORS['RESET'],
 								COLORS['BOLD'], module_name, hex(xinfo['abs_offset']), COLORS['RESET']
 							))
 				else:
