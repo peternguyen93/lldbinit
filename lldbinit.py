@@ -770,7 +770,7 @@ Note: expressions supported, do not use spaces between operators.
 		return
 	
 	value = evaluate(cmd[0])
-	if value == None:
+	if not value:
 		print("[-] error: invalid input value.")
 		print("")
 		print(help)
@@ -805,7 +805,7 @@ Note: expressions supported, do not use spaces between operators.
 		return
 	
 	value = evaluate(cmd[0])
-	if value == None:
+	if not value:
 		print("[-] error: invalid input value.")
 		print("")
 		print(help)
@@ -989,7 +989,7 @@ Note: expressions supported, do not use spaces between operators.
 		   return
 		
 		int3_addr = evaluate(cmd[0])
-		if int3_addr == None:
+		if not int3_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
@@ -1046,7 +1046,7 @@ Note: expressions supported, do not use spaces between operators.
 		   print(help)
 		   return
 		int3_addr = evaluate(cmd[0])
-		if int3_addr == None:
+		if not int3_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
@@ -1139,21 +1139,21 @@ Note: expressions supported, do not use spaces between operators.
 		
 		nop_addr = evaluate(cmd[0])
 		patch_size = 1
-		if nop_addr == None:
+		if not nop_addr:
 			print("[-] error: invalid address value.")
 			print("")
 			print(help)
 			return
 	elif len(cmd) == 2:
 		nop_addr = evaluate(cmd[0])
-		if nop_addr == None:
+		if not nop_addr:
 			print("[-] error: invalid address value.")
 			print("")
 			print(help)
 			return
 		
 		patch_size = evaluate(cmd[1])
-		if patch_size == None:
+		if not patch_size:
 			print("[-] error: invalid size value.")
 			print("")
 			print(help)
@@ -1168,7 +1168,7 @@ Note: expressions supported, do not use spaces between operators.
 	# format for WriteMemory()
 	patch_bytes = str('\x90')
 	# can we do better here? WriteMemory takes an input string... weird
-	for i in xrange(patch_size):
+	for i in range(patch_size):
 		result = target.GetProcess().WriteMemory(current_patch_addr, patch_bytes, error)
 		if error.Success() == False:
 			print("[-] error: Failed to write memory at 0x{:x}.".format(current_patch_addr))
@@ -1617,7 +1617,7 @@ Note: expressions supported, do not use spaces between operators.
 
 	if len(cmd) == 0:
 		dump_addr = get_current_pc()
-		if dump_addr == 0:
+		if not dump_addr:
 			print("[-] error: invalid current address.")
 			return
 	elif len(cmd) == 1:
@@ -1625,7 +1625,7 @@ Note: expressions supported, do not use spaces between operators.
 			print(help)
 			return
 		dump_addr = evaluate(cmd[0])
-		if dump_addr == None:
+		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
@@ -1799,7 +1799,7 @@ Note: expressions supported, do not use spaces between operators.
 		   print(help)
 		   return
 		dump_addr = evaluate(cmd[0])
-		if dump_addr == None:
+		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
@@ -1875,7 +1875,7 @@ Note: expressions supported, do not use spaces between operators.
 		   print(help)
 		   return        
 		dump_addr = evaluate(cmd[0])
-		if dump_addr == None:
+		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
@@ -1957,13 +1957,13 @@ def cmd_findmem(debugger, command, result, dict):
 		search_string = parser.binary.decode("hex")
 	elif parser.dword != None:
 		dword = evaluate(parser.dword)
-		if dword == None:
+		if not dword:
 			print("[-] Error evaluating : " + parser.dword)
 			return
 		search_string = struct.pack("I", dword & 0xffffffff)
 	elif parser.qword != None:
 		qword = evaluate(parser.qword)
-		if qword == None:
+		if not qword:
 			print("[-] Error evaluating : " + parser.qword)
 			return
 		search_string = struct.pack("Q", qword & 0xffffffffffffffff)
@@ -1983,7 +1983,7 @@ def cmd_findmem(debugger, command, result, dict):
 	count = -1
 	if parser.count != None:
 		count = evaluate(parser.count)
-		if count == None:
+		if not count:
 			print("[-] Error evaluating count : " + parser.count)
 			return
 	
@@ -2099,7 +2099,7 @@ Note: expressions supported, do not use spaces between operators.
 		return        
 
 	dump_addr = evaluate(cmd[0])
-	if dump_addr == None:
+	if not dump_addr:
 		print("[-] error: invalid address value.")
 		print("")
 		print(help)
@@ -2116,7 +2116,7 @@ def cmd_xinfo(debugger, command, result, dict):
 		return
 
 	address = evaluate(args[0])
-	if address == -1:
+	if not address:
 		print(COLORS['RED'] + 'Invalid address' + COLORS['RESET'])
 		return
 
@@ -2265,7 +2265,7 @@ def cmd_vmmap(debugger, command, result, _dict):
 		return
 
 	addr = evaluate(command)
-	if addr == None:
+	if not addr:
 		# add color or sth like in this text
 		map_infos = parse_vmmap_info()
 
@@ -2287,7 +2287,7 @@ def cmd_objc(debugger, command, result, _dict):
 	'''
 	
 	objc_addr = evaluate(command)
-	if objc_addr == None:
+	if not objc_addr:
 		print('objc <register/address> => return class name of objectiveC object')
 		return
 	
@@ -2315,6 +2315,10 @@ def cmd_pattern_offset(debugger, command, result, _dict):
 		return
 
 	value = evaluate(args[0])
+	if value == 0:
+		print(f'Your value "{args[0]}" is invalid')
+		return
+
 	length = parse_number(args[1])
 
 	pos = cyclic_find(value, length)
@@ -2635,15 +2639,15 @@ def cmd_DumpInstructions(debugger, command, result, dict):
 		disassemble(get_current_pc(), CONFIG_DISASSEMBLY_LINE_COUNT)
 	elif len(cmd) == 1:
 		address = evaluate(cmd[0])
-		if address == None:
+		if not address:
 			return
 		disassemble(address, CONFIG_DISASSEMBLY_LINE_COUNT)
 	else:
 		address = evaluate(cmd[0])
-		if address == None:
+		if not address:
 			return
 		count = evaluate(cmd[1])
-		if count == None:
+		if not count:
 			return
 		disassemble(address, count)
 
@@ -2930,7 +2934,7 @@ Note: expressions supported, do not use spaces between operators.
 		   print(help)
 		   return
 		header_addr = evaluate(cmd[0])
-		if header_addr == None:
+		if not header_addr:
 			print("[-] error: invalid header address value.")
 			print("")
 			print(help)
@@ -2981,7 +2985,7 @@ Note: expressions supported, do not use spaces between operators.
 		   print(help)
 		   return
 		header_addr = evaluate(cmd[0])
-		if header_addr == None:
+		if not header_addr:
 			print("[-] error: invalid header address value.")
 			print("")
 			print(help)

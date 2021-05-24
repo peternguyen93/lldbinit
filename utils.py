@@ -504,6 +504,10 @@ def try_read_mem(addr, size):
 	process = get_process()
 	mem_data = b''
 
+	# heuristic check address
+	if (not (addr & 0xFFFFFF0000000000)) or (not (addr & 0x7ffffffff000)):
+		return b''
+
 	while size != 0:
 		mem_data = process.ReadMemory(addr, size, err)
 		if err.Success():
