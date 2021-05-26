@@ -341,6 +341,7 @@ class XNUZones:
 		self.zone_list = []
 		self.target = target
 		self.kalloc_heap_names = []
+		self.zone_access_cache = {}
 
 		zone_array = ESBValue('zone_array')
 		if not zone_array.IsValid():
@@ -373,7 +374,10 @@ class XNUZones:
 			return None
 		
 		# cast to 'zone *'
-		return ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
+		zone = ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
+		if self.getZoneName(zone) not in self.zone_access_cache:
+			self.zone_access_cache[self.getZoneName(zone)] = idx
+		return zone
 	
 	def getZoneName(self, zone):
 		z_name = zone.z_name.GetStrValue()
@@ -389,38 +393,46 @@ class XNUZones:
 		
 		return zone_names
 	
-	def findzone_by_name(self, name):
+	def getZoneByName(self, name):
+		if zone_name in self.zone_access_cache:
+			return self[self.zone_access_cache[zone_name]]
+
 		for i in range(len(self)):
 			zone = self[i]
-			z_name = self.getZoneName(zone)
-			if z_name == name:
+			if self.getZoneName(zone) == name:
 				return zone
 		
 		return None
 	
-	def getZoneIdx_byName(self, zone_name):
+	def getZoneIdxbyName(self, zone_name):
+		if zone_name in self.zone_access_cache:
+			return self.zone_access_cache[zone_name]
+
 		for i in range(len(self)):
-			zone = self[i]
-			z_name = self.getZoneName(zone)
-			if z_name == zone_name:
+			if self.getZoneName(self[i]) == zone_name:
 				return i
+
 		return -1
 	
-	def findZone_byRegex(self, zone_name_regex):
+	def getZonebyRegex(self, zone_name_regex):
 		zone_idxs = []
+
 		for i in range(len(self)):
 			z_name = self.getZoneName(self[i])
 			if re.match(zone_name_regex, z_name):
 				zone_idxs.append(i)
+
 		return zone_idxs
 	
 	def findzone_by_names(self, name):
 		zones = []
+
 		for i in range(len(self)):
 			zone = self[i]
 			z_name = self.getZoneName(zone)
 			if z_name == name:
 				zones.append((i, zone))
+				
 		return zones
 	
 	def is_zonelogging(self, zone_idx):

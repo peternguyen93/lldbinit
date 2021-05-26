@@ -3272,11 +3272,10 @@ def cmd_xnu_list_zone(debugger, command, result, dict):
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
-	zone_names = XNU_ZONES.showallzones_name()
-
 	print('[+] Zones:')
-	pad_size = len(str(len(zone_names)))
-	for i, zone_name in enumerate(zone_names):
+	pad_size = len(str(len(XNU_ZONES)))
+	for i in range(len(XNU_ZONES)):
+		zone_name = XNU_ZONES.getZoneName(XNU_ZONES[i])
 		print(f'- {i:{pad_size}} | {zone_name}')
 	
 def cmd_xnu_show_zones_by_name(debugger, command, result, dict):
@@ -3310,14 +3309,18 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 
 	args = command.split(' ')
 	if len(args) < 2:
-		print('zone_triage: <zone_idx> <element_ptr>')
+		print('zone_triage: <zone_name> <element_ptr>')
 		return False
 	
-	zone_idx = evaluate(args[0])
+	zone_name = args[0]
 	elem_ptr = evaluate(args[1])
-
-	if zone_idx >= len(XNU_ZONES):
-		print('[!] Invalid zone id')
+	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
+	if zone_idx < 0:
+		print(f'[!] Invalid zone name : "{zone_name}"')
+		return False
+	
+	if not XNU_ZONES.is_zonelogging(zone_idx):
+		print(f'[!] Zone name "{zone_name}" is not logging')
 		return False
 	
 	if not elem_ptr:
@@ -3334,12 +3337,17 @@ def cmd_xnu_show_allocation(debugger, command, result, _dict):
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	if not len(command):
-		print('zone_triage: <zone_idx>')
+		print('zone_show_alloc_at: <zone_name>')
 		return False
 	
-	zone_idx = evaluate(command)
+	zone_name = command
+	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
+	if zone_idx < 0:
+		print(f'[!] Invalid zone name : "{zone_name}"')
+		return False
+
 	elements = XNU_ZONES.GetAllAlocationChunkAt(zone_idx)
-	zone_name = XNU_ZONES[zone_idx].z_name.GetStrValue()
+	zone_name = XNU_ZONES.getZoneName(XNU_ZONES[zone_idx])
 
 	print(f'Allocation Element of zone_array[{zone_idx}] - {zone_name}:')
 	for element in elements:
@@ -3353,16 +3361,17 @@ def cmd_xnu_show_free(debugger, command, result, _dict):
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 
 	if not len(command):
-		print('zone_show_free_at: <zone_idx> <limit>')
+		print('zone_show_free_at: <zone_name> <limit>')
 		return False
 	
 	args = command.split(' ')
-	zone_idx = evaluate(args[0])
+	zone_name = args[0]
 	zlimit = 50
 
 	if len(args) > 1:
 		zlimit = evaluate(args[1])
 	
+	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
 	XNU_ZONES.ShowZfreeListChain(zone_idx, zlimit)
 	return True
 
@@ -3379,7 +3388,7 @@ def cmd_xnu_find_chunk_at(debugger, command, result, _dict):
 	zone_name = args[0]
 	chunk_addr = evaluate(args[1])
 
-	zone_idx = XNU_ZONES.getZoneIdx_byName(zone_name)
+	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
 	status = XNU_ZONES.FindChunkInfoAtZone(zone_idx, chunk_addr)
 	if status != 'None':
 		print(f'[+] zone_array[{zone_idx}] - {hex(chunk_addr)}({status})')
@@ -3404,7 +3413,7 @@ def cmd_xnu_find_chunk_regex(debugger, command, result, _dict):
 	if zone_name_regex == 'kalloc':
 		zone_name_regex = '.*kalloc.*' # quickway to find kalloc zone
 
-	zone_idxs = XNU_ZONES.findZone_byRegex(zone_name_regex)
+	zone_idxs = XNU_ZONES.getZonebyRegex(zone_name_regex)
 	if not zone_idxs:
 		print('[+] Your chunk address is not found in any zones.')
 		return True
