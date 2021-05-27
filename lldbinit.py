@@ -3314,7 +3314,7 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	
 	zone_name = args[0]
 	elem_ptr = evaluate(args[1])
-	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
+	zone_idx = XNU_ZONES.getLoggedZoneIdxByName(zone_name)
 	if zone_idx < 0:
 		print(f'[!] Invalid zone name : "{zone_name}"')
 		return False

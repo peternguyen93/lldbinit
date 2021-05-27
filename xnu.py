@@ -342,6 +342,8 @@ class XNUZones:
 		self.target = target
 		self.kalloc_heap_names = []
 		self.zone_access_cache = {}
+		self.logged_zones = {}
+		self.pointer_size = get_pointer_size()
 
 		zone_array = ESBValue('zone_array')
 		if not zone_array.IsValid():
@@ -350,17 +352,25 @@ class XNUZones:
 		num_zones = ESBValue('num_zones')
 		if not num_zones.IsValid():
 			return
-
-		for i in range(num_zones.GetIntValue()):
-			self.zone_list.append(zone_array[i].GetLoadAddress())
 		
-		self.pointer_size = get_pointer_size()
-
 		kalloc_heap_names = ESBValue('kalloc_heap_names')
 		for i in range(4):
 			kalloc_heap_name = kalloc_heap_names[i].CastTo('char *')
 			self.kalloc_heap_names.append(kalloc_heap_name.GetStrValue())
-	
+
+		for i in range(num_zones.GetIntValue()):
+			self.zone_list.append(zone_array[i].GetLoadAddress())
+			self.zone_access_cache[self.getZoneName(zone_array[i])] = i
+		
+		# parse boot-args to findout zlog
+		boot_args = xnu_showbootargs(target)
+		zlog_array = re.findall(r'(zlog|zlog(\d+))=([a-z0-9\.]+)', boot_args)
+		if zlog_array:
+			for zlog in zlog_array:
+				self.logged_zones[zlog[2]] = self.zone_access_cache[zlog[2]]
+				if zlog[0] == 'zlog':
+					break
+
 	def __len__(self):
 		return len(self.zone_list)
 	
@@ -374,10 +384,7 @@ class XNUZones:
 			return None
 		
 		# cast to 'zone *'
-		zone = ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
-		if self.getZoneName(zone) not in self.zone_access_cache:
-			self.zone_access_cache[self.getZoneName(zone)] = idx
-		return zone
+		return ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
 	
 	def getZoneName(self, zone):
 		z_name = zone.z_name.GetStrValue()
@@ -393,13 +400,13 @@ class XNUZones:
 		
 		return zone_names
 	
-	def getZoneByName(self, name):
+	def getZoneByName(self, zone_name):
 		if zone_name in self.zone_access_cache:
 			return self[self.zone_access_cache[zone_name]]
 
 		for i in range(len(self)):
 			zone = self[i]
-			if self.getZoneName(zone) == name:
+			if self.getZoneName(zone) == zone_name:
 				return zone
 		
 		return None
@@ -417,21 +424,34 @@ class XNUZones:
 	def getZonebyRegex(self, zone_name_regex):
 		zone_idxs = []
 
-		for i in range(len(self)):
-			z_name = self.getZoneName(self[i])
-			if re.match(zone_name_regex, z_name):
-				zone_idxs.append(i)
+		if self.zone_access_cache:
+			for zone_name in self.zone_access_cache:
+				if re.match(zone_name_regex, z_name):
+					zone_idxs.append(self.zone_access_cache[zone_name])
+
+		else:
+			for i in range(len(self)):
+				z_name = self.getZoneName(self[i])
+				if re.match(zone_name_regex, z_name):
+					zone_idxs.append(i)
 
 		return zone_idxs
 	
 	def findzone_by_names(self, name):
 		zones = []
 
-		for i in range(len(self)):
-			zone = self[i]
-			z_name = self.getZoneName(zone)
-			if z_name == name:
-				zones.append((i, zone))
+		if self.zone_access_cache:
+			for zone_name in self.zone_access_cache:
+				if zone_name == name:
+					idx = self.zone_access_cache[zone_name]
+					zones.append((idx, self[idx]))
+		else:
+
+			for i in range(len(self)):
+				zone = self[i]
+				z_name = self.getZoneName(zone)
+				if z_name == name:
+					zones.append((i, zone))
 				
 		return zones
 	
@@ -439,23 +459,23 @@ class XNUZones:
 		return self[zone_idx].zlog_btlog.GetIntValue() != 0
 	
 	def show_zone_being_logged(self):
-		for i in range(len(self)):
-			zone = self[i]
+
+		if not self.logged_zones:
+			return
+		
+		for logged_zone_name in range(self.logged_zones):
+			logged_zone_idx = self.logged_zones[logged_zone_name]
+			zone = self[logged_zone_idx]
 			zlog_btlog = zone.zlog_btlog
 			zone_name = zone.z_name.GetSummary()
 			if zlog_btlog.GetIntValue() != 0:
 				print(f'- zone_array[{i}]: {zone_name} log at {zlog_btlog.GetValue()}')
 	
-	def find_logged_zone_by_name(self, name):
-		for i in range(len(self)):
-			zone = self[i]
-			zlog_btlog = zone.zlog_btlog
-			zone_name = zone.z_name.GetSummary()
-
-			if zone_name == name and zlog_btlog.GetIntValue():
-				return zone
-		
-		return None
+	def getLoggedZoneIdxByName(self, zone_name):
+		try:
+			return self.logged_zones[zone_name]
+		except KeyError:
+			return -1
 	
 	def zone_find_stack_elem(self, zone_idx, elem):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
@@ -484,7 +504,7 @@ class XNUZones:
 		btrecords = btlog_ptr.btrecords.GetIntValue()
 		depth = btlog_ptr.btrecord_btdepth.GetIntValue()
 
-		prev_op = -1
+		prev_operation = -1
 		scan_items = 0
 
 		element_hash_queue = btlog_ptr.elem_linkage_un.element_hash_queue
@@ -516,10 +536,14 @@ class XNUZones:
 				print(self.GetBtlogBacktrace(depth, record))
 				print(' \n')
 
-				if int(record_operation) == prev_op:
-					print("{0: <s} DOUBLE OP! {1: <s}".format(('*' * 8), ('*' * 8)))
+				if record_operation == prev_operation:
+					if prev_operation == 0:
+						print("{0: <s} DOUBLE FREE! {1: <s}".format(('*' * 8), ('*' * 8)))
+					else:
+						print("{0: <s} DOUBLE OP! {1: <s}".format(('*' * 8), ('*' * 8)))
 					return True
-				prev_op = record_operation
+
+				prev_operation = record_operation
 				scan_items = 0
 
 			hashelem = hashelem.element_hash_link.tqe_next
