@@ -375,7 +375,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_zones_by_name zone_find_zones_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_inspect_zone zone_inspect_zone", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_inspect_zone zone_inspect", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_at zone_show_chunk_at", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_with_regex zone_find_chunk_with_regex", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk zone_find_chunk", res)
@@ -465,7 +465,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_find_zones_index', 'list index of matching zone'],
 		[ 'zone_show_logged_zone', 'show all logged zones enable by "-zlog=<zone_name>'],
 		[ 'zone_triage', 'detect and print trace log for use after free/double free'],
-		[ 'zone_inspect_zone', 'list all chunk in specific zone with their status'],
+		[ 'zone_inspect', 'list all chunk in specific zone with their status'],
 		[ 'zone_show_chunk_at', 'find chunk address is freed or not'],
 		[ 'zone_find_chunk', 'find location of chunk address'],
 		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
@@ -3306,7 +3306,7 @@ def cmd_xnu_inspect_zone(debugger, command, result, _dict):
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	if not len(command):
-		print('zone_inspect_zone: <zone_name>')
+		print('zone_inspect: <zone_name>')
 		return False
 	
 	zone_name = command
