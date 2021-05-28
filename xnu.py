@@ -3,6 +3,7 @@ Small script support xnu kernel debugging
 Author : peternguyen
 '''
 
+from os import stat
 import lldb
 from utils import *
 from ctypes import *
@@ -195,7 +196,7 @@ def xnu_panic_log(target):
 
 ### XNU ZONES TRACKING ###
 
-class ZoneMeta(object):
+class ZoneMetaOld(object):
 	"""
 		Helper class that helpers walking metadata
 	"""
@@ -218,7 +219,7 @@ class ZoneMeta(object):
 		self.zone_map_max   = zone_info.zi_map_range.max_address.GetIntValue()
 		self.zone_meta_min  = zone_info.zi_meta_range.min_address.GetIntValue()
 		self.zone_meta_max  = zone_info.zi_meta_range.max_address.GetIntValue()
-		self.zone_array = zone_array
+		self.zone_array     = zone_array
 		self.zp_nopoison_cookie = ESBValue('zp_nopoison_cookie').GetIntValue()
 
 		if isPageIndex:
@@ -332,11 +333,182 @@ class ZoneMeta(object):
 			end *= self.meta.zm_page_count.GetIntValue()
 
 		while offs + esize <= end:
-			yield ESBValue.initWithAddressType(self.page_addr + offs, 'void *')
+			yield self.page_addr + offs
 			offs += esize
+
+ZONE_ADDR_FOREIGN = 0
+ZONE_ADDR_NATIVE  = 1
+
+class ZoneMetaNew(object):
+	"""
+	Helper class that helpers walking metadata
+	"""
+
+	def __init__(self, zone_array, addr, isPageIndex = False):
+		self.pagesize  = ESBValue('page_size').GetIntValue()
+		self.zone_info = ESBValue('zone_info')
+		self.zone_array = zone_array
+
+		def load_range(var):
+			return (var.min_address.GetIntValue(), var.max_address.GetIntValue())
+
+		def in_range(x, r):
+			return x >= r[0] and x <= r[1]
+
+		self.meta_range = load_range(self.zone_info.zi_meta_range)
+		self.native_range = load_range(self.zone_info.zi_map_range[ZONE_ADDR_NATIVE])
+		self.foreign_range = load_range(self.zone_info.zi_map_range[ZONE_ADDR_FOREIGN])
+		self.addr_base = min(self.foreign_range[0], self.native_range[0])
+
+		if isPageIndex:
+			# sign extend
+			addr = c_uint64(c_int32(addr).value * self.pagesize).value
+
+		self.address = addr
+
+		if in_range(addr, self.meta_range):
+			self.kind = 'Metadata'
+			addr -= addr % size_of('struct zone_page_metadata')
+			self.meta_addr = addr
+			self.meta = ESBValue.initWithAddressType(addr, "struct zone_page_metadata *")
+
+			self.page_addr = self.addr_base + ((addr - self.meta_range[0]) // size_of('struct zone_page_metadata') * self.pagesize)
+		elif in_range(addr, self.native_range) or in_range(addr, self.foreign_range):
+			addr &= ~(self.pagesize - 1)
+			page_idx = (addr - self.addr_base) // self.pagesize
+
+			self.kind = 'Element'
+			self.page_addr = addr
+			self.meta_addr = self.meta_range[0] + page_idx * size_of('struct zone_page_metadata')
+			self.meta = ESBValue.initWithAddressType(self.meta_addr, "struct zone_page_metadata *")
+		else:
+			self.kind = 'Unknown'
+			self.meta = None
+			self.page_addr = 0
+			self.meta_addr = 0
+
+		if self.meta:
+			self.zone = self.zone_array[self.meta.zm_index.GetIntValue()]
+		else:
+			self.zone = None
+
+	def isSecondaryPage(self):
+		return self.meta and self.meta.zm_chunk_len.GetIntValue() >= 0xe
+
+	def getPageCount(self):
+		n = self.meta and self.meta.zm_chunk_len.GetIntValue() or 0
+		if self.zone and self.zone.z_percpu.GetIntValue():
+			n *= ESBValue('zpercpu_early_count').GetIntValue()
+		return n
+
+	def getAllocAvail(self):
+		if not self.meta: return 0
+		chunk_len = self.meta.zm_chunk_len.GetIntValue()
+		return chunk_len * self.pagesize // self.zone.z_elem_size.GetIntValue()
+
+	def getAllocCount(self):
+		if not self.meta: return 0
+		return self.meta.zm_alloc_size.GetIntValue() // self.zone.z_elem_size.GetIntValue()
+
+	def getReal(self):
+		if self.isSecondaryPage():
+			return ZoneMeta(self.meta.GetIntValue() - size_of('struct zone_page_metadata') * self.meta.zm_page_index.GetIntValue())
+
+		return self
+
+	def getElementAddress(self, addr):
+		meta  = self.getReal()
+		esize = meta.zone.z_elem_size.GetIntValue()
+		start = meta.page_addr
+
+		if esize == 0:
+			return None
+
+		estart = addr - start
+		return start + estart - (estart % esize)
+
+	def getInlineBitmapChunkLength(self):
+		if self.zone.z_percpu:
+			return self.zone.z_chunk_pages.GetIntValue()
+		return self.meta.zm_chunk_len.GetIntValue()
+
+	def getBitmapSize(self):
+		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+			return 0
+		if self.meta.zm_inline_bitmap:
+			return -4 * self.getInlineBitmapChunkLength()
+		return 8 << (self.meta.zm_bitmap.GetIntValue() & 0x7)
+
+	def getBitmap(self):
+		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+			return 0
+		if self.meta.zm_inline_bitmap:
+			return self.meta.zm_bitmap.GetLoadAddress()
+		bbase = self.zone_info.zi_bits_range.min_address.GetIntValue()
+		index = self.meta.zm_bitmap.GetIntValue() & ~0x7
+		return bbase + index
+
+	def getFreeCountSlow(self):
+		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+			return self.getAllocAvail() - self.getAllocCount()
+
+		n = 0
+		if self.meta.zm_inline_bitmap.GetIntValue():
+			for i in range(0, self.getInlineBitmapChunkLength()):
+				m = ESBValue.initWithAddressType(self.meta_addr + i * 16, 'struct zone_page_metadata *');
+				bits = m.zm_bitmap.GetIntValue()
+				while bits:
+					n += 1
+					bits &= bits - 1
+		else:
+			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
+			for i in range(0, 1 << (self.meta.zm_bitmap.GetIntValue() & 0x7)):
+				bits = bitmap[i].GetIntValue()
+				while bits:
+					n += 1
+					bits &= bits - 1
+		return n
+
+	def isElementFree(self, addr):
+		meta = self.meta
+
+		if not meta or self.zone.z_permanent.GetIntValue() or not meta.zm_chunk_len.GetIntValue():
+			return True
+
+		start = self.page_addr
+		esize = self.zone.z_elem_size.GetIntValue()
+		eidx  = (addr - start) // esize
+		if meta.zm_inline_bitmap.GetIntValue():
+			i = eidx // 32
+			m = meta.GetIntValue() + size_of('struct zone_page_metadata') * i
+			bits = ESBValue.initWithAddressType(m, 'struct zone_page_metadata *').zm_bitmap.GetIntValue()
+			return (bits & (1 << (eidx % 32))) != 0
+		else:
+			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
+			bits = bitmap[eidx // 64].GetIntValue()
+			return (bits & (1 << (eidx % 64))) != 0
+	
+	def isInFreeList(self, addr):
+		return self.isElementFree(addr)
+
+	def iterateElements(self):
+		if self.meta is None:
+			return
+		esize = self.zone.z_elem_size.GetIntValue()
+		start = 0
+		end   = self.pagesize * self.meta.zm_chunk_len.GetIntValue()
+		end  -= end % esize
+
+		for offs in range(start, end, esize):
+			yield self.page_addr + offs
+
+ZoneMeta = None
+gkalloc_heap_names = []
 
 class XNUZones:
 	def __init__(self, target):
+		global ZoneMeta
+		global gkalloc_heap_names
 		# get all zones symbols
 		self.zone_list = []
 		self.target = target
@@ -353,10 +525,11 @@ class XNUZones:
 		if not num_zones.IsValid():
 			return
 		
-		kalloc_heap_names = ESBValue('kalloc_heap_names')
-		for i in range(4):
-			kalloc_heap_name = kalloc_heap_names[i].CastTo('char *')
-			self.kalloc_heap_names.append(kalloc_heap_name.GetStrValue())
+		if len(gkalloc_heap_names) < 4:
+			kalloc_heap_names = ESBValue('kalloc_heap_names')
+			for i in range(4):
+				kalloc_heap_name = kalloc_heap_names[i].CastTo('char *')
+				gkalloc_heap_names.append(kalloc_heap_name.GetStrValue())
 
 		for i in range(num_zones.GetIntValue()):
 			self.zone_list.append(zone_array[i].GetLoadAddress())
@@ -370,6 +543,11 @@ class XNUZones:
 				self.logged_zones[zlog[2]] = self.zone_access_cache[zlog[2]]
 				if zlog[0] == 'zlog':
 					break
+		
+		if ESBValue('zp_nopoison_cookie').IsValid():
+			ZoneMeta = ZoneMetaOld
+		else:
+			ZoneMeta = ZoneMetaNew
 
 	def __len__(self):
 		return len(self.zone_list)
@@ -379,18 +557,18 @@ class XNUZones:
 			yield zone
 
 	def __getitem__(self, idx):
-		# return 0 if idx >= len(self.zone_list) else self.zone_list[idx]
 		if idx >= len(self.zone_list):
 			return None
 		
 		# cast to 'zone *'
 		return ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
 	
-	def getZoneName(self, zone):
+	@classmethod
+	def getZoneName(cls, zone):
 		z_name = zone.z_name.GetStrValue()
 		heap_name_idx = zone.kalloc_heap.GetIntValue()
 		if heap_name_idx < 4:
-			return self.kalloc_heap_names[heap_name_idx] + z_name
+			return gkalloc_heap_names[heap_name_idx] + z_name
 		return z_name
 
 	def showallzones_name(self):
@@ -463,13 +641,13 @@ class XNUZones:
 		if not self.logged_zones:
 			return
 		
-		for logged_zone_name in range(self.logged_zones):
+		for logged_zone_name in self.logged_zones:
 			logged_zone_idx = self.logged_zones[logged_zone_name]
 			zone = self[logged_zone_idx]
 			zlog_btlog = zone.zlog_btlog
-			zone_name = zone.z_name.GetSummary()
+			zone_name = self.getZoneName(zone)
 			if zlog_btlog.GetIntValue() != 0:
-				print(f'- zone_array[{i}]: {zone_name} log at {zlog_btlog.GetValue()}')
+				print(f'- zone_array[{logged_zone_idx}]: {zone_name} log at {zlog_btlog.GetValue()}')
 	
 	def getLoggedZoneIdxByName(self, zone_name):
 		try:
@@ -600,15 +778,17 @@ class XNUZones:
 
 		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
 			return elements
+		
+		if ZoneMeta == ZoneMetaOld:
+			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
+					zone.pages_intermediate, zone.pages_all_used]
+		else:
+			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty, zone.z_pageq_va]
 
-		for head in [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
-				zone.pages_intermediate, zone.pages_all_used]:
-
+		for head in iteration_list:
 			for meta in self.ZoneIteratePageQueue(head):
 				for elem in meta.iterateElements():
-					if meta.isInFreeList(elem.GetIntValue()):
-						continue
-					else:
+					if not meta.isInFreeList(elem):
 						elements.append(elem)
 			
 		return elements
@@ -620,35 +800,41 @@ class XNUZones:
 		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
 			return freed_elements
 		
-		for head in [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
-				zone.pages_intermediate, zone.pages_all_used]:
-			
+		if ZoneMeta == ZoneMetaOld:
+			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
+					zone.pages_intermediate, zone.pages_all_used]
+		else:
+			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty]
+		
+		for head in iteration_list:
 			for meta in self.ZoneIteratePageQueue(head):
-				freed_elements.extend(list(meta.iterateFreeList()))
+				for elem in meta.iterateElements():
+					if meta.isInFreeList(elem):
+						freed_elements.append(elem)
 
 		return freed_elements
 
-	def FindChunkInfoAtZone(self, zone_idx, chunk_addr):
+	def GetChunkInfoAtZone(self, zone_idx, chunk_addr):
 		free_elements = self.GetAllFreeChunkAt(zone_idx)
 		alocation_elements = self.GetAllAlocationChunkAt(zone_idx)
 
 		for free_element in free_elements:
-			if free_element.GetIntValue() == chunk_addr:
+			if free_element == chunk_addr:
 				return 'Freed'
 		
 		for allocate_element in alocation_elements:
-			if allocate_element.GetIntValue() == chunk_addr:
-				return 'Used'
+			if allocate_element == chunk_addr:
+				return 'Allocated'
 		
 		return 'None'
 	
-	def FindChunkInFoWithRange(self, from_zone_idx, to_zone_idx, chunk_addr):
+	def GetChunkInfoWithRange(self, from_zone_idx, to_zone_idx, chunk_addr):
 		assert (from_zone_idx >=0 and to_zone_idx < len(self)) and (from_zone_idx < to_zone_idx), \
 						'from_zone_idx or to_zone_idx is out of bound'
 
 		for i in range(from_zone_idx, to_zone_idx):
 			zone = self[i]
-			ret = self.FindChunkInfoAtZone(i, chunk_addr)
+			ret = self.GetChunkInfoAtZone(i, chunk_addr)
 			if ret != 'None':
 				info = {
 					'zone_name':self.getZoneName(zone),
@@ -663,7 +849,7 @@ class XNUZones:
 		
 		for i in range(len(self)):
 			zone = self[i]
-			ret = self.FindChunkInfoAtZone(i, chunk_addr)
+			ret = self.GetChunkInfoAtZone(i, chunk_addr)
 			if ret != 'None':
 				info = {
 					'zone_name':self.getZoneName(zone),
@@ -674,55 +860,35 @@ class XNUZones:
 		
 		return None
 
-	def ShowZfreeListChain(self, zone_idx, z_limit):
-		""" Helper routine to print a zone free list chain
-			params:
-				zone: zone_t - Zone object
-				zfirst: void * - A pointer to the first element of the free list chain
-				zlimit: int - Limit for the number of elements to be printed by showzfreelist
-			returns:
-				None
-		"""
+	def InspectZone(self, zone_idx):
 		zone = self[zone_idx]
-		freed_elements = self.GetAllFreeChunkAt(zone_idx)
-		z_elem_size = zone.z_elem_size.GetIntValue()
-		pointer_size = size_of('vm_offset_t')
-		zp_nopoison_cookie = ESBValue('zp_nopoison_cookie').GetIntValue()
-		zp_poisoned_cookie = ESBValue('zp_poisoned_cookie').GetIntValue()
-		last_poisoned = elts_found = 0
 
-		zp_factor = ESBValue('zp_factor').GetIntValue()
-		z_elem_size = zone.z_elem_size.GetIntValue()
-		zp_scale = ESBValue('zp_scale').GetIntValue()
-		scaled_factor = zp_factor + (z_elem_size >> zp_scale)
+		print('Zone: ', COLORS['YELLOW'], self.getZoneName(zone), COLORS['RESET'])
+		print(COLORS['BOLD'], end='')
+		print("{:>5s}  {:<20s} {:<10s}".format("#", "Element", "State"))
+		print(COLORS['RESET'], end='')
 
-		out_str = ""
-		out_str += "{0: <9s} {1: <12s} {2: <18s} {3: <18s} {4: <6s}\n".format('ELEM_SIZE', 'COUNT', 'NCOOKIE', 'PCOOKIE', 'FACTOR')
-		out_str += "{0: <9d} {1: <12d} 0x{2:0>16x} 0x{3:0>16x} {4: <2d}/{5: <2d}\n\n".format(
-					z_elem_size, zone.countavail.GetIntValue() - zone.countfree.GetIntValue(), zp_nopoison_cookie, zp_poisoned_cookie, \
-							zone.zp_count.GetIntValue(), scaled_factor)
-		out_str += "{0: <7s} {1: <18s} {2: <18s} {3: <18s} {4: <18s} {5: <18s} {6: <14s}\n".format(
-					'NUM', 'ELEM', 'NEXT', 'BACKUP', '^ NCOOKIE', '^ PCOOKIE', 'POISON (PREV)')
-		print(out_str)
+		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
+			return
+		
+		if ZoneMeta == ZoneMetaOld:
+			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
+					zone.pages_intermediate, zone.pages_all_used]
+		else:
+			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty, zone.z_pageq_va]
 
-		for free_element in freed_elements:
-			elts_found += 1
-			backup_ptr = ESBValue.initWithAddressType(free_element.GetIntValue() + z_elem_size + pointer_size, 'vm_offset_t * ')
-			backup_val = backup_ptr.Dereference()
+		i = 0
+		for head in iteration_list:
+			for meta in self.ZoneIteratePageQueue(head):
+				for elem in meta.iterateElements():
+					if meta.isInFreeList(elem):
+						status = 'Freed'
+						color = COLORS["RED"]
+					else:
+						status = 'Allocated'
+						color = COLORS["GREEN"]
 
-			n_unobfuscated = backup_val.GetIntValue() ^ zp_nopoison_cookie
-			p_unobfuscated = backup_val.GetIntValue() ^ zp_poisoned_cookie
-
-			znext = free_element.Dereference()
-			znext = znext.GetIntValue() ^ zp_nopoison_cookie
-
-			if p_unobfuscated == znext:
-				poison_str = "P ({0: <d})".format(elts_found - last_poisoned)
-				last_poisoned = elts_found
-			
-			else:
-				if n_unobfuscated != znext:
-					poison_str = "INVALID"
-			
-			print("{0: <7d} 0x{1:0>16x} 0x{2:0>16x} 0x{3:0>16x} 0x{4:0>16x} 0x{5:0>16x} {6: <14s}\n".format(
-				elts_found, free_element.GetIntValue(), znext, backup_val.GetIntValue(), n_unobfuscated, p_unobfuscated, poison_str))		
+					print(color, end='')
+					print("{:5d}  {:<#20x} {:10s}".format(i, elem, status))
+					print(COLORS['RESET'], end='')
+					i+=1

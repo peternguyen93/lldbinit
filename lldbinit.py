@@ -124,35 +124,6 @@ CONFIG_LOG_LEVEL = "LOG_NONE"
 # removes the offsets and modifies the module name position
 # reference: https://lldb.llvm.org/formats.html
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
-
-# default colors - modify as you wish
-COLOR_REGVAL           = "WHITE"
-COLOR_REGNAME          = "GREEN"
-COLOR_CPUFLAGS         = "RED"
-COLOR_SEPARATOR        = "BLUE"
-COLOR_HIGHLIGHT_LINE   = "RED"
-COLOR_REGVAL_MODIFIED  = "YELLOW"
-COLOR_SYMBOL_NAME      = "BLUE"
-COLOR_CURRENT_PC       = "RED"
-
-#
-# Don't mess after here unless you know what you are doing!
-#
-
-COLORS = {  
-			"BLACK":     "\033[30m",
-			"RED":       "\033[31m",
-			"GREEN":     "\033[32m",
-			"YELLOW":    "\033[33m",
-			"BLUE":      "\033[34m",
-			"MAGENTA":   "\033[35m",
-			"CYAN":      "\033[36m",
-			"WHITE":     "\033[37m",
-			"RESET":     "\033[0m",
-			"BOLD":      "\033[1m",
-			"UNDERLINE": "\033[4m"
-		}
-
 DATA_WINDOW_ADDRESS = 0
 
 # old_x86 = { "eax": 0, "ecx": 0, "edx": 0, "ebx": 0, "esp": 0, "ebp": 0, "esi": 0, "edi": 0, "eip": 0, "eflags": 0,
@@ -401,13 +372,12 @@ def __lldb_init_module(debugger, internal_dict):
 
 	# xnu zone commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone zone_list", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_zones_by_name zone_find_index", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_zones_by_name zone_find_zones_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_allocation zone_show_alloc_at", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_free zone_show_free_at", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk_at zone_find_chunk_at", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk_regex zone_find_chunk_regex", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_inspect_zone zone_inspect_zone", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_at zone_show_chunk_at", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_with_regex zone_find_chunk_with_regex", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk zone_find_chunk", res)
 
 	# VMware/Virtualbox support
@@ -492,14 +462,13 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'kdp-reboot', 'reboot the remote machine'],
 		[ 'panic_log', 'show panic log'],
 		[ 'zone_list', 'list xnu zones name'],
-		[ 'zone_find_index', 'list index of matching zone'],
+		[ 'zone_find_zones_index', 'list index of matching zone'],
 		[ 'zone_show_logged_zone', 'show all logged zones enable by "-zlog=<zone_name>'],
 		[ 'zone_triage', 'detect and print trace log for use after free/double free'],
-		[ 'zone_show_alloc_at', 'show zone allocations of specific zone'],
-		[ 'zone_show_free_at', 'show zone freed chunks of specific zone'],
-		[ 'zone_find_chunk_at', 'find chunk address is freed or not'],
+		[ 'zone_inspect_zone', 'list all chunk in specific zone with their status'],
+		[ 'zone_show_chunk_at', 'find chunk address is freed or not'],
 		[ 'zone_find_chunk', 'find location of chunk address'],
-		[ 'zone_find_chunk_regex', 'find location of chunk address by using regex'],
+		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3278,14 +3247,14 @@ def cmd_xnu_list_zone(debugger, command, result, dict):
 		zone_name = XNU_ZONES.getZoneName(XNU_ZONES[i])
 		print(f'- {i:{pad_size}} | {zone_name}')
 	
-def cmd_xnu_show_zones_by_name(debugger, command, result, dict):
+def cmd_xnu_find_zones_by_name(debugger, command, result, dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 
 	args = command.split(' ')
 	if len(args) < 1:
-		print('zone_find_index <zone name>')
+		print('zone_find_zones_index <zone name>')
 		return False
 
 	zones = XNU_ZONES.findzone_by_names(args[0])
@@ -3331,13 +3300,13 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 
 	return True
 
-def cmd_xnu_show_allocation(debugger, command, result, _dict):
+def cmd_xnu_inspect_zone(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	if not len(command):
-		print('zone_show_alloc_at: <zone_name>')
+		print('zone_inspect_zone: <zone_name>')
 		return False
 	
 	zone_name = command
@@ -3346,65 +3315,44 @@ def cmd_xnu_show_allocation(debugger, command, result, _dict):
 		print(f'[!] Invalid zone name : "{zone_name}"')
 		return False
 
-	elements = XNU_ZONES.GetAllAlocationChunkAt(zone_idx)
-	zone_name = XNU_ZONES.getZoneName(XNU_ZONES[zone_idx])
-
-	print(f'Allocation Element of zone_array[{zone_idx}] - {zone_name}:')
-	for element in elements:
-		print('- ', hex(element.GetIntValue()))
-
+	XNU_ZONES.InspectZone(zone_idx)
 	return True
 
-def cmd_xnu_show_free(debugger, command, result, _dict):
-	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
-
-	if not len(command):
-		print('zone_show_free_at: <zone_name> <limit>')
-		return False
-	
-	args = command.split(' ')
-	zone_name = args[0]
-	zlimit = 50
-
-	if len(args) > 1:
-		zlimit = evaluate(args[1])
-	
-	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
-	XNU_ZONES.ShowZfreeListChain(zone_idx, zlimit)
-	return True
-
-def cmd_xnu_find_chunk_at(debugger, command, result, _dict):
+def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
-		print('zone_find_chunk_at: <zone_name> <chunk_addr>')
+		print('zone_show_chunk_at: <zone_name> <chunk_addr>')
 		return False
 	
 	zone_name = args[0]
 	chunk_addr = evaluate(args[1])
 
 	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
-	status = XNU_ZONES.FindChunkInfoAtZone(zone_idx, chunk_addr)
+	status = XNU_ZONES.GetChunkInfoAtZone(zone_idx, chunk_addr)
 	if status != 'None':
-		print(f'[+] zone_array[{zone_idx}] - {hex(chunk_addr)}({status})')
+		color = COLORS["GREEN"]
+		if status == 'Freed':
+			color = COLORS["RED"]
+
+		print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}{hex(chunk_addr)}{COLORS["RESET"]}{color}({status})')
+		print(COLORS["RESET"], end='')
 	else:
 		print(f'[+] Your chunk address is not found in zone {zone_name}.')
 	
 	return True
 
-def cmd_xnu_find_chunk_regex(debugger, command, result, _dict):
+def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
 		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
-		print('zone_find_chunk_at: <zone_name_regex> <chunk_addr>')
+		print('zone_show_chunk_with_regex: <zone_name_regex> <chunk_addr>')
 		return False
 	
 	zone_name_regex = args[0]
@@ -3422,9 +3370,14 @@ def cmd_xnu_find_chunk_regex(debugger, command, result, _dict):
 		zone_name = XNU_ZONES.getZoneName(XNU_ZONES[zone_idx])
 		print(f'[+] Searching on zone: {zone_name}')
 
-		status = XNU_ZONES.FindChunkInfoAtZone(zone_idx, chunk_addr)
+		status = XNU_ZONES.GetChunkInfoAtZone(zone_idx, chunk_addr)
 		if status != 'None':
-			print(f'[*] zone_array[{zone_idx}]({zone_name}) - {hex(chunk_addr)}({status})')
+			color = COLORS["GREEN"]
+			if status == 'Freed':
+				color = COLORS["RED"]
+
+			print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}{hex(chunk_addr)}{COLORS["RESET"]}{color}({status})')
+			print(COLORS["RESET"], end='')
 			break
 	
 	return True

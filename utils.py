@@ -10,6 +10,34 @@ from struct import *
 import platform
 import time
 
+# default colors - modify as you wish
+COLOR_REGVAL           = "WHITE"
+COLOR_REGNAME          = "GREEN"
+COLOR_CPUFLAGS         = "RED"
+COLOR_SEPARATOR        = "BLUE"
+COLOR_HIGHLIGHT_LINE   = "RED"
+COLOR_REGVAL_MODIFIED  = "YELLOW"
+COLOR_SYMBOL_NAME      = "BLUE"
+COLOR_CURRENT_PC       = "RED"
+
+#
+# Don't mess after here unless you know what you are doing!
+#
+
+COLORS = {  
+			"BLACK":     "\033[30m",
+			"RED":       "\033[31m",
+			"GREEN":     "\033[32m",
+			"YELLOW":    "\033[33m",
+			"BLUE":      "\033[34m",
+			"MAGENTA":   "\033[35m",
+			"CYAN":      "\033[36m",
+			"WHITE":     "\033[37m",
+			"RESET":     "\033[0m",
+			"BOLD":      "\033[1m",
+			"UNDERLINE": "\033[4m"
+		}
+
 # ----------------------------------------------------------
 # Packing and Unpacking functions
 # ----------------------------------------------------------
@@ -536,7 +564,8 @@ def findGlobalVariable(name):
 	target = get_target()
 	sbvar = target.FindGlobalVariables(name, 1).GetValueAtIndex(0)
 	if not sbvar.IsValid():
-		print(f'[!] Unable to find {name}, please boot xnu with development kernel Or load binary has debug infos')
+		if name != 'zp_nopoison_cookie':
+			print(f'[!] Unable to find {name}, please boot xnu with development kernel Or load binary has debug infos')
 		return None
 	return sbvar
 
@@ -575,9 +604,13 @@ class ESBValue(object):
 		return ESBValue.initWithSBValue(self.GetChildMemberWithName(name))
 	
 	def GetValue(self):
+		if not self.sb_value:
+			return None
 		return self.sb_value.GetValue()
 	
 	def GetSummary(self):
+		if not self.sb_value:
+			return None
 		return self.sb_value.GetSummary()
 	
 	def GetIntValue(self):
@@ -589,9 +622,13 @@ class ESBValue(object):
 		return int(value)
 	
 	def Dereference(self):
+		if not self.sb_value:
+			return None
 		return ESBValue.initWithSBValue(self.sb_value.Dereference())
 	
 	def GetBoolValue(self):
+		if not self.sb_value:
+			return False
 		return True if self.GetValue() == 'true' else False
 	
 	def GetStrValue(self):
@@ -601,21 +638,33 @@ class ESBValue(object):
 		return ''
 	
 	def GetLoadAddress(self):
+		if not self.sb_value:
+			return 0
 		return self.sb_value.GetLoadAddress()
 	
 	def GetAddress(self):
+		if not self.sb_value:
+			return 0
 		return self.sb_value.GetAddress()
 	
 	def GetChildMemberWithName(self, child_name):
+		if not self.sb_value:
+			return None
 		return self.sb_value.GetChildMemberWithName(child_name)
 	
 	def GetChildAtIndex(self, idx):
+		if not self.sb_value:
+			return None
 		return self.sb_value.GetChildAtIndex(idx)
 	
 	def IsValid(self):
+		if not self.sb_value:
+			return False
 		return self.sb_value.IsValid()
 	
 	def __getitem__(self, idx):
+		if not self.sb_value:
+			return None
 		return ESBValue.initWithSBValue(self.GetChildAtIndex(idx))
 	
 	def CastTo(self, var_type, use_load_addr = False):
