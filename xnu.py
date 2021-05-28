@@ -655,7 +655,7 @@ class XNUZones:
 		except KeyError:
 			return -1
 	
-	def zone_find_stack_elem(self, zone_idx, elem):
+	def zone_find_stack_elem(self, zone_idx, elem, action=0):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
 			refer to the given zone element.
 			Usage: zstack_findelem <btlog addr> <elem addr>
@@ -702,25 +702,42 @@ class XNUZones:
 				record = ESBValue.initWithAddressType(btrecords + recoffset, 'btlog_record_t *')
 				record_operation = record.operation.GetIntValue()
 
-				out_str = ('-' * 8)
-				if record_operation == 1:
-					out_str += "OP: ALLOC. "
-				else:
-					out_str += "OP: FREE.  "
-
-				out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
-
-				print(out_str)
-				print(self.GetBtlogBacktrace(depth, record))
-				print(' \n')
-
-				if record_operation == prev_operation:
-					if prev_operation == 0:
-						print("{0: <s} DOUBLE FREE! {1: <s}".format(('*' * 8), ('*' * 8)))
+				if not action:
+					out_str = ('-' * 8)
+					if record_operation == 1:
+						out_str += "OP: ALLOC. "
 					else:
-						print("{0: <s} DOUBLE OP! {1: <s}".format(('*' * 8), ('*' * 8)))
-					return True
+						out_str += "OP: FREE.  "
 
+					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
+
+					print(out_str)
+					print(self.GetBtlogBacktrace(depth, record))
+					print(' \n')
+
+					if record_operation == prev_operation:
+						if prev_operation == 0:
+							print("{0: <s} DOUBLE FREE! {1: <s}".format(('*' * 8), ('*' * 8)))
+						else:
+							print("{0: <s} DOUBLE OP! {1: <s}".format(('*' * 8), ('*' * 8)))
+						return True
+				elif action == 1 and not record_operation:
+					# show free only
+					out_str = ('-' * 8)
+					out_str += "OP: FREE.  "
+					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
+					print(out_str)
+					print(self.GetBtlogBacktrace(depth, record))
+					print(' \n')
+				elif action == 2 and record_operation:
+					# show free only
+					out_str = ('-' * 8)
+					out_str += "OP: ALLOC.  "
+					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
+					print(out_str)
+					print(self.GetBtlogBacktrace(depth, record))
+					print(' \n')
+				
 				prev_operation = record_operation
 				scan_items = 0
 

@@ -379,6 +379,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_at zone_show_chunk_at", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_with_regex zone_find_chunk_with_regex", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk zone_find_chunk", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_backtrace_at zone_backtrace_at", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -469,6 +470,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_show_chunk_at', 'find chunk address is freed or not'],
 		[ 'zone_find_chunk', 'find location of chunk address'],
 		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
+		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3380,6 +3382,42 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 			print(COLORS["RESET"], end='')
 			break
 	
+	return True
+
+def cmd_xnu_zone_backtrace_at(debugger, command, result, _dict):
+	global XNU_ZONES
+	if not XNU_ZONES:
+		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+	
+	args = command.split(' ')
+	action = 1 # get backtrace history of free chunk pointer
+	if len(args) < 2:
+		print('Usage: zone_backtrace_at <zone_name> <chunk_ptr> <action>')
+		print('action: 1 for kfree backtrace only ')
+		print('        2 for kmalloc backtrace only ')
+		return False
+
+	try:
+		zone_name = args[0]
+		chunk_ptr = evaluate(args[1])
+		action = int(args[2])
+	except IndexError:
+		pass
+	
+	zone_idx = XNU_ZONES.getLoggedZoneIdxByName(zone_name)
+	if zone_idx < 0:
+		print(f'[!] Invalid zone name : "{zone_name}"')
+		return False
+	
+	if not XNU_ZONES.is_zonelogging(zone_idx):
+		print(f'[!] Zone name "{zone_name}" is not logging')
+		return False
+	
+	if not chunk_ptr:
+		print('[!] Invalid chunk ptr')
+		return False
+	
+	XNU_ZONES.zone_find_stack_elem(zone_idx, chunk_ptr, action)
 	return True
 	
 def cmd_xnu_find_chunk(debugger, command, result, _dict):
