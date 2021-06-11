@@ -579,7 +579,9 @@ class ESBValue(object):
 
 		if var_type and self.sb_value:
 			address = int(self.sb_value.GetValue(), 16)
-			self.sb_value = cast_address_to(get_target(), 'new_var', address, var_type)
+			# self.sb_value = cast_address_to(get_target(), 'new_var', address, var_type)
+			target = get_target()
+			self.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 	
 	@classmethod
 	def initWithSBValue(cls, sb_value):
@@ -821,7 +823,7 @@ def address_of(target, sb_value):
 	except AttributeError:
 		return 0xffffffffffffffff
 
-def cast_address_to(target, var_name, address, type_name):
+def cast_address_as_pointer_type(target, var_name, address, type_name):
 	pointer = target.FindFirstType(type_name).GetPointerType()
 	if pointer.IsValid():
 		my_var = target.CreateValueFromExpression(var_name, f'({pointer.name}){hex(address)}')

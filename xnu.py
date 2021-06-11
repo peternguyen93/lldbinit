@@ -258,6 +258,9 @@ class ZoneMetaOld(object):
 			self.page_addr = 0
 			self.meta_addr = 0
 			self.first_offset = 0
+	
+	def __str__(self) -> str:
+		return f'ZoneMetaOld(kind="{self.kind}", meta_addr="{self.meta_addr}", page_addr="{self.page_addr}")'
 			
 	def isSecondaryPage(self):
 		return self.meta and self.meta.zm_secondary_page
@@ -391,6 +394,9 @@ class ZoneMetaNew(object):
 			self.zone = self.zone_array[self.meta.zm_index.GetIntValue()]
 		else:
 			self.zone = None
+	
+	def __str__(self) -> str:
+		return f'ZoneMetaNew(kind="{self.kind}", meta_addr="{self.meta_addr}", page_addr="{self.page_addr}")'
 
 	def isSecondaryPage(self):
 		return self.meta and self.meta.zm_chunk_len.GetIntValue() >= 0xe
@@ -474,15 +480,14 @@ class ZoneMetaNew(object):
 
 		if not meta or self.zone.z_permanent.GetIntValue() or not meta.zm_chunk_len.GetIntValue():
 			return True
-
+		
 		start = self.page_addr
 		esize = self.zone.z_elem_size.GetIntValue()
 		eidx  = (addr - start) // esize
 		if meta.zm_inline_bitmap.GetIntValue():
-			i = eidx // 32
-			m = meta.GetIntValue() + size_of('struct zone_page_metadata') * i
-			bits = ESBValue.initWithAddressType(m, 'struct zone_page_metadata *').zm_bitmap.GetIntValue()
-			return (bits & (1 << (eidx % 32))) != 0
+			idx = (eidx // 32)
+			bits = ESBValue.initWithAddressType(meta.GetIntValue() + idx, 'struct zone_page_metadata *').zm_bitmap.GetIntValue()
+			return bits & (1 << (eidx % 32)) != 0
 		else:
 			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
 			bits = bitmap[eidx // 64].GetIntValue()
@@ -571,7 +576,7 @@ class XNUZones:
 			return gkalloc_heap_names[heap_name_idx] + z_name
 		return z_name
 
-	def showallzones_name(self):
+	def getallzones_name(self):
 		zone_names = []
 		for i in range(len(self)):
 			zone_names.append(self.getZoneName(self[i]))
@@ -655,7 +660,7 @@ class XNUZones:
 		except KeyError:
 			return -1
 	
-	def zone_find_stack_elem(self, zone_idx, elem, action=0):
+	def zone_find_stack_elem(self, zone_idx, target_element, action=0):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
 			refer to the given zone element.
 			Usage: zstack_findelem <btlog addr> <elem addr>
@@ -676,8 +681,6 @@ class XNUZones:
 		zone = self[zone_idx]
 		btlog_ptr = zone.zlog_btlog.CastTo('btlog_t *')
 		
-		target_element = elem
-
 		btrecord_size = btlog_ptr.btrecord_size.GetIntValue()
 		btrecords = btlog_ptr.btrecords.GetIntValue()
 		depth = btlog_ptr.btrecord_btdepth.GetIntValue()
@@ -767,7 +770,7 @@ class XNUZones:
 		pc_array = read_mem(zstack_record_bt.GetLoadAddress(), depth * self.pointer_size)
 
 		while frame < depth:
-			frame_pc = unpack('<Q', pc_array[frame*8 : (frame + 1) * 8])[0]
+			frame_pc = unpack('<Q', pc_array[frame*self.pointer_size : (frame + 1) * self.pointer_size])[0]
 			if not frame_pc:
 				break
 			
@@ -776,7 +779,7 @@ class XNUZones:
 				symbol_str = str(sb_addr)
 			else:
 				symbol_str = ''
-			out_str += "{0: <#0x} <{1: <s}>\n".format(frame_pc, symbol_str)
+			out_str += "{0: <#0X} <{1: <s}>\n".format(frame_pc, symbol_str)
 			frame += 1
 
 		return out_str
@@ -785,16 +788,16 @@ class XNUZones:
 		cur_page_addr = page.packed_address.GetIntValue()
 		while cur_page_addr:
 			meta = ZoneMeta(self, cur_page_addr, isPageIndex=True)
+			# print(meta)
 			yield meta
 			page = meta.meta.zm_page_next
 			cur_page_addr = page.packed_address.GetIntValue()
 	
-	def GetAllAlocationChunkAt(self, zone_idx):
-		elements = []
+	def IterateAllChunkAt(self, zone_idx):
 		zone = self[zone_idx]
 
 		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
-			return elements
+			yield 'None', 0
 		
 		if ZoneMeta == ZoneMetaOld:
 			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
@@ -805,43 +808,19 @@ class XNUZones:
 		for head in iteration_list:
 			for meta in self.ZoneIteratePageQueue(head):
 				for elem in meta.iterateElements():
-					if not meta.isInFreeList(elem):
-						elements.append(elem)
-			
-		return elements
-	
-	def GetAllFreeChunkAt(self, zone_idx):
-		freed_elements = []
-		zone = self[zone_idx]
-
-		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
-			return freed_elements
-		
-		if ZoneMeta == ZoneMetaOld:
-			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
-					zone.pages_intermediate, zone.pages_all_used]
-		else:
-			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty]
-		
-		for head in iteration_list:
-			for meta in self.ZoneIteratePageQueue(head):
-				for elem in meta.iterateElements():
+					status = 'Allocated'
 					if meta.isInFreeList(elem):
-						freed_elements.append(elem)
-
-		return freed_elements
-
+						status = 'Freed'
+					
+					yield status, elem
+			
 	def GetChunkInfoAtZone(self, zone_idx, chunk_addr):
-		free_elements = self.GetAllFreeChunkAt(zone_idx)
-		alocation_elements = self.GetAllAlocationChunkAt(zone_idx)
+		for status, elem in self.IterateAllChunkAt(zone_idx):
+			if status == 'None':
+				break
 
-		for free_element in free_elements:
-			if free_element == chunk_addr:
-				return 'Freed'
-		
-		for allocate_element in alocation_elements:
-			if allocate_element == chunk_addr:
-				return 'Allocated'
+			if elem == chunk_addr:
+				return status
 		
 		return 'None'
 	
@@ -879,33 +858,21 @@ class XNUZones:
 
 	def InspectZone(self, zone_idx):
 		zone = self[zone_idx]
-
 		print('Zone: ', COLORS['YELLOW'], self.getZoneName(zone), COLORS['RESET'])
 		print(COLORS['BOLD'], end='')
 		print("{:>5s}  {:<20s} {:<10s}".format("#", "Element", "State"))
 		print(COLORS['RESET'], end='')
 
-		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
-			return
-		
-		if ZoneMeta == ZoneMetaOld:
-			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
-					zone.pages_intermediate, zone.pages_all_used]
-		else:
-			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty, zone.z_pageq_va]
+		num = 0
+		for status, elem in self.IterateAllChunkAt(zone_idx):
+			if status == 'None':
+				break
 
-		i = 0
-		for head in iteration_list:
-			for meta in self.ZoneIteratePageQueue(head):
-				for elem in meta.iterateElements():
-					if meta.isInFreeList(elem):
-						status = 'Freed'
-						color = COLORS["RED"]
-					else:
-						status = 'Allocated'
-						color = COLORS["GREEN"]
-
-					print(color, end='')
-					print("{:5d}  {:<#20x} {:10s}".format(i, elem, status))
-					print(COLORS['RESET'], end='')
-					i+=1
+			color = COLORS["GREEN"]
+			if status == 'Freed':
+				color = COLORS["RED"]
+			
+			print(color, end='')
+			print("{:5d}  0x{:<20X} {:10s}".format(num, elem, status))
+			print(COLORS['RESET'], end='')
+			num+=1

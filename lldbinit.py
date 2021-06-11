@@ -380,6 +380,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_chunk_with_regex zone_find_chunk_with_regex", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk zone_find_chunk", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_backtrace_at zone_backtrace_at", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_reload zone_reload", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -471,6 +472,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_find_chunk', 'find location of chunk address'],
 		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
 		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
+		[ 'zone_reload', 'reload zone if network connection is failed'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3340,7 +3342,7 @@ def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 		if status == 'Freed':
 			color = COLORS["RED"]
 
-		print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}{hex(chunk_addr)}{COLORS["RESET"]}{color}({status})')
+		print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}0x{chunk_addr:X}{COLORS["RESET"]}{color} ({status})')
 		print(COLORS["RESET"], end='')
 	else:
 		print(f'[+] Your chunk address is not found in zone {zone_name}.')
@@ -3378,7 +3380,7 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 			if status == 'Freed':
 				color = COLORS["RED"]
 
-			print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}{hex(chunk_addr)}{COLORS["RESET"]}{color}({status})')
+			print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}0x{chunk_addr:X}{COLORS["RESET"]}{color}({status})')
 			print(COLORS["RESET"], end='')
 			break
 	
@@ -3436,11 +3438,16 @@ def cmd_xnu_find_chunk(debugger, command, result, _dict):
 		zone_name = info['zone_name']
 		zone_idx = info['zone_idx']
 		status = info['status']
-		print(f'[+] zone_array[{zone_idx}] ({zone_name}) - {hex(chunk_addr)}({status})')
+		print(f'[+] zone_array[{zone_idx}] ({zone_name}) - 0x{chunk_addr:X}({status})')
 	else:
 		print('[+] Your chunk address is not found in any zones.')
 	
 	return True
+
+def cmd_xnu_zone_reload(debugger, command, result, _dict):
+	global XNU_ZONES
+	print('[+] Reload XNU_ZONES')
+	XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	kexts = xnu_get_all_kexts()
@@ -3449,7 +3456,7 @@ def cmd_xnu_showallkexts(debugger, command, result, dict):
 	
 	print('-- Loaded kexts:')
 	for kext_name, kext_uuid, kext_address, kext_size in kexts:
-		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t{hex(kext_address)}\t{kext_size}')
+		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t0x{kext_address:X}\t{kext_size}')
 
 def cmd_xnu_breakpoint(debugger, command, result, dict):
 	args = command.split(' ')
@@ -3486,7 +3493,7 @@ def cmd_xnu_to_offset(debugger, command, result, dict):
 		return
 
 	offset = address - base_address
-	print(f'Offsset from Kext {kext_name} base address : {hex(offset)}')
+	print(f'Offsset from Kext {kext_name} base address : 0x{offset:X}')
 
 def cmd_xnu_list_all_process(debugger, command, result, dict):
 	xnu_list_all_process()
