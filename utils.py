@@ -137,7 +137,7 @@ def evaluate(command):
 	frame = get_frame()
 	if frame:
 		value = frame.EvaluateExpression(command)
-		if value.IsValid() == False:
+		if not value.IsValid():
 			return 0
 		
 		if value.GetValue() == None:
@@ -150,7 +150,7 @@ def evaluate(command):
 		if target == None:
 			return 0
 		value = target.EvaluateExpression(command)
-		if value.IsValid() == False:
+		if not value.IsValid():
 			return 0
 		
 		if value.GetValue() == None:
@@ -531,10 +531,6 @@ def try_read_mem(addr, size):
 	err = lldb.SBError()
 	process = get_process()
 	mem_data = b''
-
-	# heuristic check address
-	# if (not (addr & 0xFFFFFF0000000000)) or (not (addr & 0x7ffffffff000)):
-	# 	return b''
 
 	while size != 0:
 		mem_data = process.ReadMemory(addr, size, err)

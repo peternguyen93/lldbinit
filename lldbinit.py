@@ -1585,31 +1585,29 @@ Note: expressions supported, do not use spaces between operators.
 
 	global GlobalListOutput
 	GlobalListOutput = []
-		
-	cmd = command.split()
 
-	if len(cmd) == 0:
+	'''
+		Parse argument of db, for example, argument pass into command is
+		"struct->x + struct->length" result will be : "struct->x + struct->length"
+	'''	
+	
+	if not len(command):
 		dump_addr = get_current_pc()
 		if not dump_addr:
 			print("[-] error: invalid current address.")
 			return
-	elif len(cmd) == 1:
-		if cmd[0] == "help":
+	else:
+		if command == "help":
 			print(help)
 			return
-		dump_addr = evaluate(cmd[0])
+		dump_addr = evaluate(command)
 		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
 			return
-	else:
-		print("[-] error: please insert a start address.")
-		print("")
-		print(help)
-		return
 
-	membuff = try_read_mem(dump_addr, 0x100)
+	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
 	if not membuff:
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
@@ -1680,30 +1678,28 @@ Note: expressions supported, do not use spaces between operators.
 	global GlobalListOutput
 	GlobalListOutput = []
 
-	cmd = command.split()
+	'''
+		Parse argument of db, for example, argument pass into command is
+		"struct->x + struct->length" result will be : "struct->x + struct->length"
+	'''	
 
-	if len(cmd) == 0:
+	if not len(command):
 		dump_addr = get_current_pc()
-		if dump_addr == 0:
+		if not dump_addr:
 			print("[-] error: invalid current address.")
 			return
-	elif len(cmd) == 1:
-		if cmd[0] == "help":
-		   print(help)
-		   return
-		dump_addr = evaluate(cmd[0])
-		if dump_addr == None:
+	else:
+		if command == "help":
+			print(help)
+			return
+		dump_addr = evaluate(command)
+		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
 			return
-	else:
-		print("[-] error: please insert a start address.")
-		print("")
-		print(help)
-		return
 
-	membuff = try_read_mem(dump_addr, 0x100)
+	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
 	if not membuff:
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
@@ -1760,30 +1756,28 @@ Note: expressions supported, do not use spaces between operators.
 	global GlobalListOutput
 	GlobalListOutput = []
 
-	cmd = command.split()
+	'''
+		Parse argument of db, for example, argument pass into command is
+		"struct->x + struct->length" result will be : "struct->x + struct->length"
+	'''	
 
-	if len(cmd) == 0:
+	if not len(command):
 		dump_addr = get_current_pc()
-		if dump_addr == 0:
+		if not dump_addr:
 			print("[-] error: invalid current address.")
 			return
-	elif len(cmd) == 1:
-		if cmd[0] == "help":
-		   print(help)
-		   return
-		dump_addr = evaluate(cmd[0])
+	else:
+		if command == "help":
+			print(help)
+			return
+		dump_addr = evaluate(command)
 		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
 			return
-	else:
-		print("[-] error: please insert a start address.")
-		print("")
-		print(help)
-		return
 
-	membuff = try_read_mem(dump_addr, 0x100)
+	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
 	if not membuff:
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
@@ -1836,30 +1830,28 @@ Note: expressions supported, do not use spaces between operators.
 	global GlobalListOutput
 	GlobalListOutput = []
 
-	cmd = command.split()
+	'''
+		Parse argument of db, for example, argument pass into command is
+		"struct->x + struct->length" result will be : "struct->x + struct->length"
+	'''	
 
-	if len(cmd) == 0:
+	if not len(command):
 		dump_addr = get_current_pc()
-		if dump_addr == 0:
+		if not dump_addr:
 			print("[-] error: invalid current address.")
 			return
-	elif len(cmd) == 1:
-		if cmd[0] == "help":
-		   print(help)
-		   return        
-		dump_addr = evaluate(cmd[0])
+	else:
+		if command == "help":
+			print(help)
+			return
+		dump_addr = evaluate(command)
 		if not dump_addr:
 			print("[-] error: invalid input address value.")
 			print("")
 			print(help)
 			return
-	else:
-		print("[-] error: please insert a start address.")
-		print("")
-		print(help)
-		return
 
-	membuff = try_read_mem(dump_addr, 0x100)
+	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
 	if not membuff:
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
@@ -3992,10 +3984,8 @@ def print_cpu_registers(register_names):
 		except KeyError:
 			if is_aarch64():
 				if register_name == 'x29':
-					register_name = 'fp'
 					reg_val = registers['fp']
 				elif register_name == 'x30':
-					register_name == 'lr'
 					reg_val = registers['lr']
 
 		if register_name in flag_regs:
