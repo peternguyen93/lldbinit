@@ -560,8 +560,6 @@ def findGlobalVariable(name):
 	target = get_target()
 	sbvar = target.FindGlobalVariables(name, 1).GetValueAtIndex(0)
 	if not sbvar.IsValid():
-		if name != 'zp_nopoison_cookie':
-			print(f'[!] Unable to find {name}, please boot xnu with development kernel Or load binary has debug infos')
 		return None
 	return sbvar
 
@@ -571,7 +569,13 @@ class ESBValue(object):
 		if var_name == 'classcall':
 			self.sb_value = None
 		else:
+			# find this variable in global context
 			self.sb_value = findGlobalVariable(var_name)
+			if not self.sb_value:
+				# find this variable in local context
+				self.sb_value = lldb.frame.FindVariable(var_name)
+				if not self.sb_value.IsValid():
+					self.sb_value = None
 
 		if var_type and self.sb_value:
 			address = int(self.sb_value.GetValue(), 16)

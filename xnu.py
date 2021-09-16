@@ -524,10 +524,14 @@ class XNUZones:
 
 		zone_array = ESBValue('zone_array')
 		if not zone_array.IsValid():
+			print('[!] Unable to find "zone_array", please boot xnu with development kernel \
+					Or load binary has debug infos')
 			return
 		
 		num_zones = ESBValue('num_zones')
 		if not num_zones.IsValid():
+			print('[!] Unable to find "num_zones", please boot xnu with development kernel \
+					Or load binary has debug infos')
 			return
 		
 		if len(gkalloc_heap_names) < 4:
