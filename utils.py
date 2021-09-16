@@ -566,6 +566,7 @@ def findGlobalVariable(name):
 class ESBValue(object):
 	def __init__(self, var_name, var_type=''):
 		super().__init__()
+		self.sb_var_name = ''
 		if var_name == 'classcall':
 			self.sb_value = None
 		else:
@@ -573,20 +574,23 @@ class ESBValue(object):
 			self.sb_value = findGlobalVariable(var_name)
 			if not self.sb_value:
 				# find this variable in local context
-				self.sb_value = lldb.frame.FindVariable(var_name)
+				self.sb_value = get_frame().FindVariable(var_name)
 				if not self.sb_value.IsValid():
 					self.sb_value = None
+					self.sb_var_name = var_name
 
 		if var_type and self.sb_value:
 			address = int(self.sb_value.GetValue(), 16)
 			# self.sb_value = cast_address_to(get_target(), 'new_var', address, var_type)
 			target = get_target()
 			self.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
+			self.sb_var_name = 'var_name'
 	
 	@classmethod
 	def initWithSBValue(cls, sb_value):
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = sb_value
+		new_esbvalue.sb_var_name = sb_value.GetName()
 		return new_esbvalue
 	
 	@classmethod
@@ -594,11 +598,15 @@ class ESBValue(object):
 		target = get_target()
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
+		new_esbvalue.sb_var_name = 'var_name'
 		return new_esbvalue
 	
 	def __getattr__(self, name):
 		if name == 'sb_value':
 			return self.sb_value
+		
+		if name == 'sb_var_name':
+			return self.sb_var_name
 
 		if self.sb_value == None:
 			return None
@@ -615,7 +623,7 @@ class ESBValue(object):
 			return None
 		return self.sb_value.GetSummary()
 	
-	def GetIntValue(self):
+	def GetIntValue(self) -> int:
 		value = self.GetValue()
 		if not value:
 			return 0
@@ -628,12 +636,12 @@ class ESBValue(object):
 			return None
 		return ESBValue.initWithSBValue(self.sb_value.Dereference())
 	
-	def GetBoolValue(self):
+	def GetBoolValue(self) -> bool:
 		if not self.sb_value:
 			return False
 		return True if self.GetValue() == 'true' else False
 	
-	def GetStrValue(self):
+	def GetStrValue(self) -> str:
 		summary = self.GetSummary()
 		if summary and 'no value available' not in summary:
 			return summary[1:-1] # skip double quote in "data"
@@ -659,7 +667,7 @@ class ESBValue(object):
 			return None
 		return self.sb_value.GetChildAtIndex(idx)
 	
-	def IsValid(self):
+	def IsValid(self) -> bool:
 		if not self.sb_value:
 			return False
 		return self.sb_value.IsValid()
@@ -679,6 +687,18 @@ class ESBValue(object):
 		new_sb = target.CreateValueFromExpression('new_var', f'({var_type}){address}')
 		self.sb_value = new_sb
 		return self
+	
+	def GetName(self) -> str:
+		'''
+			return variable name in source code
+		'''
+		if self.sb_var_name:
+			return self.sb_var_name
+		
+		if self.sb_value:
+			return self.sb_value.GetName()
+		
+		return ''
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory

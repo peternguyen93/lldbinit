@@ -4,6 +4,7 @@ Author : peternguyen
 '''
 
 from os import stat
+from typing import List
 import lldb
 from utils import *
 from ctypes import *
@@ -20,8 +21,19 @@ AURR_PANIC_VERSION = 1
 
 ## main functions ##
 
-def xnu_get_all_kexts():
+def xnu_esbvalue_check(esbvar : ESBValue) -> bool:
+	esb_var_name = esbvar.GetName()
+	if not esbvar.IsValid():
+		print(f'[!] Unable to find "{esb_var_name}", please boot xnu with development kernel Or \
+load binary has debug infos')
+		return False
+	return True
+
+def xnu_get_all_kexts() -> List:
 	g_load_kext_summaries = ESBValue('gLoadedKextSummaries')
+	if not xnu_esbvalue_check(g_load_kext_summaries):
+		return []
+
 	base_address = g_load_kext_summaries.GetIntValue()
 	entry_size = g_load_kext_summaries.entry_size.GetIntValue()
 	kext_summaries_ptr = base_address + size_of('OSKextLoadedKextSummaryHeader')
@@ -54,10 +66,9 @@ def xnu_get_kext_base_address(kext_name):
 
 	return 0
 
-def xnu_write_task_kdp_pmap(target, task):
+def xnu_write_task_kdp_pmap(target, task) -> bool:
 	kdp_pmap = ESBValue('kdp_pmap')
-	if not kdp_pmap.IsValid():
-		print('[!] kdp_pmap not found')
+	if not xnu_esbvalue_check(kdp_pmap):
 		return False
 
 	task = task.CastTo('task *')
@@ -70,10 +81,9 @@ def xnu_write_task_kdp_pmap(target, task):
 
 	return True
 
-def xnu_reset_kdp_pmap(target):
+def xnu_reset_kdp_pmap(target) -> bool:
 	kdp_pmap = ESBValue('kdp_pmap')
-	if not kdp_pmap.IsValid():
-		print('[!] kdp_pmap not found')
+	if not xnu_esbvalue_check(kdp_pmap):
 		return False
 	
 	kdp_pmap_addr = kdp_pmap.GetLoadAddress()
@@ -84,7 +94,7 @@ def xnu_reset_kdp_pmap(target):
 
 	return True
 
-def xnu_read_user_address(target, task, address, size):
+def xnu_read_user_address(target, task, address, size) -> bytes:
 	out = ''
 
 	if GetConnectionProtocol() != 'kdp':
@@ -121,9 +131,7 @@ def xnu_write_user_address(target, task, address, value):
 
 def xnu_search_process_by_name(search_proc_name):
 	allproc = ESBValue('allproc')
-
-	if not allproc.IsValid():
-		print('[!] This command only support for XNU kernel debugging.')
+	if not xnu_esbvalue_check(allproc):
 		return None
 
 	allproc_ptr = allproc.lh_first
@@ -140,8 +148,7 @@ def xnu_search_process_by_name(search_proc_name):
 
 def xnu_list_all_process():
 	allproc = ESBValue('allproc')
-	if not allproc.IsValid():
-		print('[!] This command only support for XNU kernel debugging.')
+	if not xnu_esbvalue_check(allproc):
 		return None
 
 	allproc_ptr = allproc.lh_first
@@ -152,15 +159,18 @@ def xnu_list_all_process():
 		print(f'+ {p_pid} - {proc_name} - {allproc_ptr.GetValue()}')
 		allproc_ptr = allproc_ptr.p_list.le_next
 
-def xnu_showbootargs(target):
+def xnu_showbootargs(target) -> str:
 	pe_state = ESBValue('PE_state')
+	if not xnu_esbvalue_check(pe_state):
+		return ''
+
 	boot_args = pe_state.bootArgs.CastTo('boot_args *')
 	commandline = boot_args.CommandLine
 	return read_str(commandline.GetLoadAddress(), 1024).decode('utf-8')
 
-def xnu_panic_log(target):
+def xnu_panic_log(target) -> str:
 	panic_info = ESBValue('panic_info')
-	if not panic_info.IsValid():
+	if not xnu_esbvalue_check(panic_info):
 		return b''
 
 	mph_magic = panic_info.mph_magic
@@ -523,15 +533,11 @@ class XNUZones:
 		self.pointer_size = get_pointer_size()
 
 		zone_array = ESBValue('zone_array')
-		if not zone_array.IsValid():
-			print('[!] Unable to find "zone_array", please boot xnu with development kernel \
-					Or load binary has debug infos')
+		if not xnu_esbvalue_check(zone_array):
 			return
 		
 		num_zones = ESBValue('num_zones')
-		if not num_zones.IsValid():
-			print('[!] Unable to find "num_zones", please boot xnu with development kernel \
-					Or load binary has debug infos')
+		if not xnu_esbvalue_check(num_zones):
 			return
 		
 		if len(gkalloc_heap_names) < 4:
