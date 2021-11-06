@@ -64,8 +64,6 @@ LLDB design:
 lldb -> debugger -> target -> process -> thread -> frame(s)
 									  -> thread -> frame(s)
 '''
-# I mainly use Python 3 as default but when debug XNU Kernel,
-# Kernel Debug Kit use Python 2 :|
 from __future__ import print_function 
 
 if __name__ == "__main__":
@@ -1199,7 +1197,7 @@ Note: expressions supported, do not use spaces between operators.
 	# format for WriteMemory()
 	patch_bytes = str('\x00')
 	# can we do better here? WriteMemory takes an input string... weird
-	for i in xrange(patch_size):
+	for i in range(patch_size):
 		result = target.GetProcess().WriteMemory(current_patch_addr, patch_bytes, error)
 		if error.Success() == False:
 			print("[-] error: Failed to write memory at 0x{:x}.".format(current_patch_addr))
@@ -1319,7 +1317,7 @@ def cmd_LoadBreakPointsRva(debugger, command, result, dict):
 		line = line.rstrip()
 		if not line: 
 			break
-		debugger.HandleCommand("breakpoint set -a " + hex(loadaddr + long(line, 16)))
+		debugger.HandleCommand("breakpoint set -a " + hex(loadaddr + int(line, 16)))
 	f.close()
 
 
@@ -1915,9 +1913,9 @@ def cmd_findmem(debugger, command, result, dict):
 	parser = parser.parse_args(arg.split())
 	
 	if parser.string != None:
-		search_string = parser.string
+		search_string = parser.string.encode('utf-8')
 	elif parser.unicode != None:
-		search_string  = unicode(parser.unicode)
+		search_string  = parser.unicode
 	elif parser.binary != None:
 		search_string = parser.binary.decode("hex")
 	elif parser.dword != None:
@@ -1970,8 +1968,8 @@ def cmd_findmem(debugger, command, result, dict):
 		mem_name  = m.group(1)
 		mem_range = m.group(2)
 		#0x000000-0x000000
-		mem_start = long(mem_range.split("-")[0], 16)
-		mem_end   = long(mem_range.split("-")[1], 16)
+		mem_start = int(mem_range.split("-")[0], 16)
+		mem_end   = int(mem_range.split("-")[1], 16)
 		tmp.append(mem_name)
 		tmp.append(mem_start)
 		tmp.append(mem_end)
@@ -3202,7 +3200,7 @@ def cmd_xnu_kdp_reboot(debugger, command, result, dict):
 	return True
 
 def cmd_xnu_show_bootargs(debugger, command, result, dict):
-	boot_args = xnu_showbootargs(debugger.GetSelectedTarget())
+	boot_args = xnu_showbootargs()
 	if not boot_args:
 		print('Please use kernel.development to boot macOS')
 		return False
@@ -3217,7 +3215,7 @@ def cmd_xnu_panic_log(debugger, command, result, dict):
 		print('panic_log <save path | empty>')
 		return False
 	
-	panic_log = xnu_panic_log(debugger.GetSelectedTarget())
+	panic_log = xnu_panic_log()
 	
 	if len(args) == 1 and args[0]:
 		log_file = args[0]
@@ -3239,8 +3237,8 @@ def cmd_xnu_list_zone(debugger, command, result, dict):
 	
 	print('[+] Zones:')
 	pad_size = len(str(len(XNU_ZONES)))
-	for i in range(len(XNU_ZONES)):
-		zone_name = XNU_ZONES.getZoneName(XNU_ZONES[i])
+	for i, zone in enumerate(XNU_ZONES):
+		zone_name = XNU_ZONES.getZoneName(zone)
 		print(f'- {i:{pad_size}} | {zone_name}')
 	
 def cmd_xnu_find_zones_by_name(debugger, command, result, dict):

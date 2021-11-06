@@ -159,7 +159,7 @@ def xnu_list_all_process():
 		print(f'+ {p_pid} - {proc_name} - {allproc_ptr.GetValue()}')
 		allproc_ptr = allproc_ptr.p_list.le_next
 
-def xnu_showbootargs(target) -> str:
+def xnu_showbootargs() -> str:
 	pe_state = ESBValue('PE_state')
 	if not xnu_esbvalue_check(pe_state):
 		return ''
@@ -168,7 +168,7 @@ def xnu_showbootargs(target) -> str:
 	commandline = boot_args.CommandLine
 	return read_str(commandline.GetLoadAddress(), 1024).decode('utf-8')
 
-def xnu_panic_log(target) -> str:
+def xnu_panic_log() -> str:
 	panic_info = ESBValue('panic_info')
 	if not xnu_esbvalue_check(panic_info):
 		return b''
@@ -551,7 +551,7 @@ class XNUZones:
 			self.zone_access_cache[self.getZoneName(zone_array[i])] = i
 		
 		# parse boot-args to findout zlog
-		boot_args = xnu_showbootargs(target)
+		boot_args = xnu_showbootargs()
 		zlog_array = re.findall(r'(zlog|zlog(\d+))=([a-z0-9\.]+)', boot_args)
 		if zlog_array:
 			for zlog in zlog_array:
@@ -568,8 +568,8 @@ class XNUZones:
 		return len(self.zone_list)
 	
 	def __iter__(self):
-		for zone in self.zone_list:
-			yield zone
+		for zone_addr in self.zone_list:
+			yield ESBValue.initWithAddressType(zone_addr, 'zone *')
 
 	def __getitem__(self, idx):
 		if idx >= len(self.zone_list):
@@ -619,7 +619,7 @@ class XNUZones:
 
 		if self.zone_access_cache:
 			for zone_name in self.zone_access_cache:
-				if re.match(zone_name_regex, z_name):
+				if re.match(zone_name_regex, zone_name):
 					zone_idxs.append(self.zone_access_cache[zone_name])
 
 		else:

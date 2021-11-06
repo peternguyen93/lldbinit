@@ -567,17 +567,20 @@ class ESBValue(object):
 	def __init__(self, var_name, var_type=''):
 		super().__init__()
 		self.sb_var_name = ''
+		self.sb_value = None
+
 		if var_name == 'classcall':
-			self.sb_value = None
-		else:
-			# find this variable in global context
-			self.sb_value = findGlobalVariable(var_name)
-			if not self.sb_value:
-				# find this variable in local context
-				self.sb_value = get_frame().FindVariable(var_name)
-				if not self.sb_value.IsValid():
-					self.sb_value = None
-					self.sb_var_name = var_name
+			# skip initialize for classcall
+			return
+
+		# find this variable in global context
+		self.sb_value = findGlobalVariable(var_name)
+		if not self.sb_value:
+			# find this variable in local context
+			self.sb_value = get_frame().FindVariable(var_name)
+			if not self.sb_value.IsValid():
+				self.sb_value = None
+				self.sb_var_name = var_name
 
 		if var_type and self.sb_value:
 			address = int(self.sb_value.GetValue(), 16)
