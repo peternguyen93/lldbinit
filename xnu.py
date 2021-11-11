@@ -3,6 +3,7 @@ Small script support xnu kernel debugging
 Author : peternguyen
 '''
 
+from errno import ESHUTDOWN
 from os import stat
 from typing import List
 import lldb
@@ -129,9 +130,9 @@ def xnu_write_user_address(target, task, address, value):
 
 	return True
 
-def xnu_search_process_by_name(search_proc_name):
+def xnu_find_process_by_name(search_proc_name):
 	allproc = ESBValue('allproc')
-	if not xnu_esbvalue_check(allproc):
+	if not allproc.IsValid():
 		return None
 
 	allproc_ptr = allproc.lh_first
@@ -148,7 +149,7 @@ def xnu_search_process_by_name(search_proc_name):
 
 def xnu_list_all_process():
 	allproc = ESBValue('allproc')
-	if not xnu_esbvalue_check(allproc):
+	if not allproc.IsValid():
 		return None
 
 	allproc_ptr = allproc.lh_first
@@ -203,6 +204,319 @@ def xnu_panic_log() -> str:
 		out_str += read_mem(panic_buf + other_log_begin_offset, other_log_len)
 	
 	return out_str
+
+### XNU MACH IPC PORT ###
+
+LTABLE_ID_GEN_SHIFT = 0
+LTABLE_ID_GEN_BITS  = 46
+LTABLE_ID_GEN_MASK  = 0x00003fffffffffff
+LTABLE_ID_IDX_SHIFT = LTABLE_ID_GEN_BITS
+LTABLE_ID_IDX_BITS  = 18
+LTABLE_ID_IDX_MASK  = 0xffffc00000000000
+
+def waitq_table_idx_from_id(_id : ESBValue) -> int:
+	return int((_id.GetIntValue() & LTABLE_ID_IDX_MASK) >> LTABLE_ID_IDX_SHIFT)
+
+def waitq_table_gen_from_id(_id : ESBValue) -> int:
+	return (_id.GetIntValue() & LTABLE_ID_GEN_MASK) >> LTABLE_ID_GEN_SHIFT
+
+def get_waitq_set_id_string(setid : ESBValue) -> str:
+	idx = waitq_table_idx_from_id(setid)
+	gen = waitq_table_gen_from_id(setid)
+	return "{:>7d}/{:<#14x}".format(idx, gen)
+
+def get_ipc_space_table(ipc_space : ESBValue) -> tuple:
+	""" Return the tuple of (entries, size) of the table for a space
+	"""
+	table = ipc_space.is_table.__hazard_ptr
+	if table.GetIntValue():
+		return (table, table.ie_size.GetIntValue())
+	return (None, 0)
+
+def get_ipc_task(proc : ESBValue) -> ESBValue:
+	return proc.task.CastTo('task *')
+
+def get_proc_from_task(task : ESBValue) -> ESBValue:
+	return task.bsd_info.CastTo('proc *')
+
+def get_destination_proc_from_port(port : ESBValue) -> ESBValue:
+	dest_space = port.ip_receiver
+	task = dest_space.is_task
+	proc = get_proc_from_task(task)
+	return proc
+	
+def get_ipc_port_name(ie_bits : int, ipc_idx : int) -> int:
+	'''
+		osfmk/ipc/ipc_entry.c
+		```c
+		ipc_entry_t
+		ipc_entry_lookup(
+			ipc_space_t             space,
+			mach_port_name_t        name)
+		{
+			...
+			index = MACH_PORT_INDEX(name);
+			if (index < space->is_table_size) {
+				entry = &space->is_table[index];
+				if (IE_BITS_GEN(entry->ie_bits) != MACH_PORT_GEN(name) ||
+					IE_BITS_TYPE(entry->ie_bits) == MACH_PORT_TYPE_NONE) {
+					entry = IE_NULL;
+				}
+			....
+		}
+		```
+		mach_port_name = index | (entry->ie_bits & 0xFF000000) >> 24
+	'''
+	return ((ie_bits & 0xFF000000) >> 24) | (ipc_idx << 8)
+
+def get_waitq_sets(wqset_q : ESBValue) -> list:
+	sets = []
+
+	if wqset_q.IsNull() == 0:
+		return sets
+
+	ref = wqset_q.waitq_set_id
+	while not ref.wqr_value.IsNull():
+		if ref.wqr_value.GetIntValue() & 1:
+			sets.append(get_waitq_set_id_string(ref.wqr_value))
+			break
+
+		link = ref.wqr_value.CastTo('struct waitq_link *')
+		sets.append(get_waitq_set_id_string(link.wql_node))
+		ref  = link.wql_next
+
+	return sets
+
+def get_iokit_object_type_str(kobject : ESBValue) -> str:
+	# get iokit object type
+	vtable_ptr = kobject.CastTo('uintptr_t *').Dereference()
+	vtable_func_ptr = ESBValue.initWithAddressType(vtable_ptr.GetIntValue() + 2 * size_of('uintptr_t'), 'uintptr_t *')
+	first_vtable_func = vtable_func_ptr[0].GetIntValue()
+	func_desc = resolve_symbol_name(first_vtable_func)
+	m = re.match(r'(\w*)::(\w*)', func_desc)
+	if not m:
+		return '<unknow>'
+	
+	return m[1]
+
+def get_kobject_from_port(portval : ESBValue) -> str:
+	""" Get Kobject description from the port.
+		params: portval - core.value representation of 'ipc_port *' object
+		returns: str - string of kobject information
+	"""
+	io_bits = portval.ip_object.io_bits.GetIntValue()
+	if not io_bits & 0x800:
+		return ''
+
+	kobject_val = portval.ip_kobject
+	kobject_str = "{0: <#020x}".format(kobject_val.GetIntValue())
+	objtype_index = io_bits & 0x3ff
+	objtype_str   = get_enum_name('ipc_kotype_t', objtype_index, "IKOT_")
+	if objtype_str == 'IOKIT_OBJECT':
+		iokit_classnm = get_iokit_object_type_str(kobject_val)
+		desc_str = "kobject({:s}:{:s})".format(objtype_str, iokit_classnm)
+	else:
+		desc_str = "kobject({0:s})".format(objtype_str)
+		if objtype_str[:5] == 'TASK_':
+			proc_val = get_proc_from_task(kobject_val.CastTo('task *'))
+			desc_str += " " + proc_val.p_name.GetStrValue()
+	return kobject_str + " " + desc_str
+
+def get_port_destination_summary(port : ESBValue) -> str:
+	out_str = ''
+	destination_str = ''
+	destname_str = get_kobject_from_port(port)
+	if not destname_str or "kobject(TIMER)" in destname_str:
+		# check port is active
+		if port.ip_object.io_bits.GetIntValue() & 0x80000000:
+			destname_str = "{0: <#020x}".format(port.ip_messages.imq_receiver_name.GetIntValue())
+			desc_proc = get_destination_proc_from_port(port)
+			if not desc_proc.IsNull():
+				destination_str = "{0:s}({1:d})".format(desc_proc.p_name.GetStrValue(), desc_proc.p_pid.GetIntValue())
+			else:
+				destination_str = 'task()'
+		else:
+			destname_str = "{0: <#020x}".format(port.GetIntValue())
+			destination_str = "inactive-port"
+
+	out_str += "{0: <20s} {1: <20s}".format(destname_str, destination_str)
+	return out_str
+
+def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
+	""" 
+		Borrow from XNU source
+		Get summary of a ipc entry.
+		params:
+			entry - core.value representing ipc_entry_t in the kernel
+			ipc_name - str of format '0x0123' for display in summary.  
+		returns:
+			str - string of ipc entry related information
+
+		types of rights:
+			'Dead'  : Dead name
+			'Set'   : Port set
+			'S'     : Send right
+			'R'     : Receive right
+			'O'     : Send-once right
+			'm'     : Immovable send port
+			'i'     : Immovable receive port
+			'g'     : No grant port
+		types of notifications:
+			'd'     : Dead-Name notification requested
+			's'     : Send-Possible notification armed
+			'r'     : Send-Possible notification requested
+			'n'     : No-Senders notification requested
+			'x'     : Port-destroy notification requested
+	"""
+	ipc_entry_info = {
+		"object" : 0,
+		"right" : '', "urefs" : 0,
+		"nsets" : 0, "nmsgs" : 0,
+		"destname" : '', "destination" : ''
+	}
+
+	ie_object = entry.ie_object
+	ie_bits = entry.ie_bits.GetIntValue()
+
+	if (ie_bits & 0x001f0000) == 0:
+		# entry is freed
+		return None
+
+	io_bits = ie_object.io_bits.GetIntValue()
+	ipc_entry_info['urefs'] = ie_bits & 0xffff
+	ipc_entry_info['object'] = entry.ie_object.GetIntValue()
+
+	if ie_bits & 0x00100000:
+		ipc_entry_info['right'] = 'Dead'
+	elif ie_bits & 0x00080000:
+		ipc_entry_info['right'] = 'Set'
+		psetval = ie_object.CastTo('ipc_pset *')
+		set_str = get_waitq_sets(psetval.ips_wqset.wqset_q)
+		ipc_entry_info['nsets'] = len(set_str)
+		ipc_entry_info['nmsgs'] = 0
+	else:
+		if ie_bits & 0x00010000:
+			if ie_bits & 0x00020000:
+				# SEND + RECV
+				ipc_entry_info['right'] = 'SR'
+			else:
+				# SEND only
+				ipc_entry_info['right'] = 'S'
+		elif ie_bits & 0x00020000:
+			# RECV only
+			ipc_entry_info['right'] = 'R'
+		elif ie_bits & 0x00040000 :
+			# SEND_ONCE
+			ipc_entry_info['right'] = 'O'
+		portval = ie_object.CastTo('ipc_port_t')
+
+		ie_request = entry.ie_request.GetIntValue()
+		if ie_request:
+			ip_requests_addr = portval.ip_requests.GetIntValue()
+			requestsval = ESBValue.initWithAddressType(
+								ip_requests_addr + ie_request * size_of('struct ipc_port_request'),
+								'struct ipc_port_request *'
+							)
+			sorightval = requestsval.notify.port
+			soright_ptr = sorightval.GetIntValue()
+			if soright_ptr != 0:
+				# dead-name notification requested
+				ipc_entry_info['right'] += 'd'
+				# send-possible armed
+				if soright_ptr & 0x1:
+					ipc_entry_info['right'] += 's'
+				# send-possible requested
+				if soright_ptr & 0x2:
+					ipc_entry_info['right'] += 'r'
+		
+		# No-senders notification requested
+		if portval.ip_nsrequest.GetIntValue() != 0 or portval.ip_kobject_nsrequest.GetIntValue():
+			ipc_entry_info['right'] += 'n'
+		
+		# port-destroy notification requested
+		if portval.ip_pdrequest.GetIntValue() != 0:
+			ipc_entry_info['right'] += 'x'
+		
+		# Immovable receive rights
+		if portval.ip_immovable_receive.GetIntValue() != 0:
+			ipc_entry_info['right'] += 'i'
+		
+		# Immovable send rights
+		if portval.ip_immovable_send.GetIntValue() != 0:
+			ipc_entry_info['right'] += 'm'
+
+		# No-grant Port
+		if portval.ip_no_grant.GetIntValue() != 0:
+			ipc_entry_info['right'] += 'g'
+
+		# Port with SB filtering on
+		if io_bits & 0x00001000 != 0:
+			ipc_entry_info['right'] += 'f'
+
+		# early-out if the rights-filter doesn't match
+		if rights_filter != '' and rights_filter != ipc_entry_info['right']:
+			return None
+
+		# # now show the port destination part
+		ipc_entry_info['destname'] = get_port_destination_summary(ie_object.CastTo('ipc_port_t'))
+
+		# Get the number of sets to which this port belongs
+		set_str = get_waitq_sets(portval.ip_waitq)
+		ipc_entry_info['nsets'] = len(set_str)
+		ipc_entry_info['nmsgs'] = portval.ip_messages.imq_msgcount.GetIntValue()
+
+	if rights_filter == '' or rights_filter == ipc_entry_info['right']:
+		return ipc_entry_info
+	
+	return None
+
+def print_ipc_information(ipc_space : ESBValue):
+	entry_table, num_entries = get_ipc_space_table(ipc_space)
+	entry_table_address = entry_table.GetIntValue()
+
+	print("{0: <20s} {1: <20s} {2: <20s} {3: <8s} {4: <10s} {5: <18s} {6: >8s} {7: <8s}".format(
+		'ipc_space', 'is_task', 'is_table', 'flags', 'ports', 'table_next', 'low_mod', 'high_mod'
+	))
+
+	flags = ''
+	if entry_table_address:
+		flags += 'A'
+	else:
+		flags += ' '
+	if ipc_space.is_grower.GetIntValue():
+		flags += 'G'
+
+	print("{0: <#020x} {1: <#020x} {2: <#020x} {3: <8s} {4: <10d} {5: <#18x} {6: >8d} {7: <8d}".format(
+			ipc_space.GetIntValue(),
+			ipc_space.is_task.GetIntValue(),
+			entry_table.GetIntValue(),
+			flags,
+			num_entries,
+			ipc_space.is_table_next.GetIntValue(),
+			ipc_space.is_low_mod.GetIntValue(),
+			ipc_space.is_high_mod.GetIntValue())
+		)
+
+	print("{: <20s} {: <12s} {: <8s} {: <8s} {: <8s} {: <8s} {: <20s} {: <20s}".format(
+		"object", "name", "rights", "urefs", "nsets", "nmsgs", "destname", "destination"))
+	
+	for idx in range(1, num_entries):
+		ipc_entry = ESBValue.initWithAddressType(entry_table_address + idx * size_of('struct ipc_entry'), 'ipc_entry_t')
+		ipc_entry_info = get_ipc_entry_summary(ipc_entry)
+		if ipc_entry_info == None:
+			continue
+		
+		print("{: <#020x} {: <12s} {: <8s} {: <8d} {: <8d} {: <8d} {: <20s} {: <20s}".format(
+			ipc_entry_info['object'],
+			str(hex(get_ipc_port_name(ipc_entry.ie_bits.GetIntValue(), idx))),
+			ipc_entry_info['right'],
+			ipc_entry_info['urefs'],
+			ipc_entry_info['nsets'],
+			ipc_entry_info['nmsgs'],
+			ipc_entry_info['destname'],
+			ipc_entry_info['destination']
+		))
+
 
 ### XNU ZONES TRACKING ###
 

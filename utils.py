@@ -2,6 +2,7 @@
 LLDB utils functions
 Author : peternguyen
 '''
+import ctypes
 import lldb
 import re
 from subprocess import Popen, PIPE, check_call, CalledProcessError
@@ -554,6 +555,105 @@ def size_of(struct_name):
 	
 	return -1
 
+SIGN_MASK = 1 << 55
+INT64_MAX = 18446744073709551616
+
+def stripPAC(pointer : int , type_size : int) -> int:
+	ptr_mask = (1 << (64 - type_size)) - 1
+	pac_mask = ~ptr_mask
+	sign = pointer & SIGN_MASK
+
+	if sign:
+		return (pointer | pac_mask) + INT64_MAX
+	else:
+		return pointer & ptr_mask
+
+def strip_kernelPAC(pointer : int) -> int:
+	if get_arch() != 'arm64e':
+		return pointer
+	
+	T1Sz = ESBValue('gT1Sz')
+	return stripPAC(pointer, T1Sz.GetIntValue())
+
+type_name_cache = {}
+emum_name_cache = {}
+
+def get_type(type_name : str) -> lldb.SBType:
+	'''
+		Borrow this from XNU debug script
+	'''
+	global type_name_cache
+
+	target_type = str(type_name).strip()
+	
+	if target_type in type_name_cache:
+		# use cache to speedup
+		return type_name_cache[target_type]
+	
+	requested_type_is_struct = False
+	m = re.match(r'\s*struct\s*(.*)$', target_type)
+	if m:
+		requested_type_is_struct = True
+		target_type = m.group(1)
+	
+	tmp_type = None
+	requested_type_is_pointer = False
+	if target_type.endswith('*') :
+		requested_type_is_pointer = True
+	
+	search_type = target_type.rstrip('*').strip()
+	type_arr = [t for t in get_target().FindTypes(search_type)]
+	if requested_type_is_struct:
+		type_arr = [t for t in type_arr if t.type == lldb.eTypeClassStruct]
+	
+	 # After the sort, the struct type with more fields will be at index [0].
+	# This hueristic helps selecting struct type with more fields compared to ones with "opaque" members
+	type_arr.sort(reverse=True, key=lambda x: x.GetNumberOfFields())
+	if len(type_arr) > 0:
+		tmp_type = type_arr[0]
+	else:
+		raise NameError(f'Unable to find type {target_type}')
+
+	if not tmp_type.IsValid():
+		raise NameError(f'Unable to Cast to type {target_type}')
+
+	if requested_type_is_pointer:
+		tmp_type = tmp_type.GetPointerType()
+	type_name_cache[target_type] = tmp_type
+
+	return type_name_cache[target_type]
+
+def get_enum_name(enum_name, _key, prefix = ''):
+	'''
+		Borrow this from XNU debug script
+	'''
+	global emum_name_cache
+
+	ty = get_type(enum_name)
+	
+	if enum_name not in emum_name_cache:
+		ty_dict  = {}
+
+		for e in ty.get_enum_members_array():
+			if ty.GetTypeFlags() & lldb.eTypeIsSigned:
+				ty_dict[e.GetValueAsSigned()] = e.GetName()
+			else:
+				ty_dict[e.GetValueAsUnsigned()] = e.GetName()
+
+		emum_name_cache[enum_name] = ty_dict
+	else:
+		ty_dict = emum_name_cache[enum_name]
+
+	if ty.GetTypeFlags() & lldb.eTypeIsSigned:
+		key = ctypes.c_long(_key).value
+	else:
+		key = _key
+
+	name = ty_dict.get(key, "UNKNOWN({:d})".format(key))
+	if name.startswith(prefix):
+		return name[len(prefix):]
+	return name
+
 # overwrites SBValue for easier to access struct member
 
 def findGlobalVariable(name):
@@ -615,6 +715,12 @@ class ESBValue(object):
 			return None
 		
 		return ESBValue.initWithSBValue(self.GetChildMemberWithName(name))
+	
+	def IsNull(self) -> bool:
+		return self.GetIntValue() == 0
+	
+	def IsZero(self) -> bool:
+		return self.IsNull()
 	
 	def GetValue(self):
 		if not self.sb_value:

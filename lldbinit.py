@@ -360,7 +360,7 @@ def __lldb_init_module(debugger, internal_dict):
 	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_breakpoint kbp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_to_offset ktooff", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_all_process showallproc", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_search_process_by_name showproc", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_process_by_name showproc", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_read_usr_addr readuseraddr", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_set_kdp_pmap setkdp", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_reset_kdp_pmap resetkdp", res)
@@ -379,6 +379,10 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_chunk zone_find_chunk", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_backtrace_at zone_backtrace_at", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_reload zone_reload", res)
+
+	# xnu port commands
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ipc_task_port showtaskipc", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -3439,6 +3443,55 @@ def cmd_xnu_zone_reload(debugger, command, result, _dict):
 	print('[+] Reload XNU_ZONES')
 	XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
 
+# XNU MACH IPC PORT COMMANDS
+
+def cmd_xnu_show_ipc_task_port(debugger, command, result, _dict):
+	'''
+	'''
+	return True
+
+def cmd_xnu_show_ports(debugger, command, result, _dict):
+	args = command.split(' ')
+	if len(args) < 1:
+		print('showports <ipc_space_t address/ process name>')
+		return False
+	
+	ipc_space = None
+	proc_name = ''
+	ipc_space_addr = 0
+
+	try:
+		# parse address and convert to ipc_space_t
+		ipc_space_addr = int(args[0], 16)
+		ipc_space = ESBValue.initWithAddressType(ipc_space_addr, 'ipc_space *')
+	except ValueError:
+		proc_name = args[0]
+	
+	if proc_name:
+		proc_val = xnu_find_process_by_name(proc_name)
+		if not proc_val:
+			print(f'[!] Your process {proc_name} does not found.')
+			return False
+		
+		task_val = get_ipc_task(proc_val)
+		ipc_space = task_val.itk_space
+	
+	if ipc_space == None:
+		print('[!] Unable to find itk_space for given ', end = '')
+		if ipc_space_addr:
+			print('space ipc address:', hex(ipc_space_addr))
+		elif proc_name:
+			print('process name:', proc_name)
+		else:
+			print('Unknow')
+
+		return False
+	
+	print_ipc_information(ipc_space)
+	return True
+
+# -------------------------------------------------------
+
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	kexts = xnu_get_all_kexts()
 
@@ -3488,14 +3541,14 @@ def cmd_xnu_to_offset(debugger, command, result, dict):
 def cmd_xnu_list_all_process(debugger, command, result, dict):
 	xnu_list_all_process()
 
-def cmd_xnu_search_process_by_name(debugger, command, result, dict):
+def cmd_xnu_find_process_by_name(debugger, command, result, dict):
 	args = command.split(' ')
 	if len(args) < 1:
 		print('showproc <process name>')
 		return
 
 	proc_name = args[0]
-	xnu_proc = xnu_search_process_by_name(proc_name)
+	xnu_proc = xnu_find_process_by_name(proc_name)
 	if xnu_proc == None:
 		print(f'[!] Couldn\'t found your process {proc_name}')
 		return
@@ -3512,7 +3565,7 @@ def cmd_xnu_read_usr_addr(debugger, command, result, dict):
 		return
 
 	process_name = args[0]
-	proc = xnu_search_process_by_name(process_name)
+	proc = xnu_find_process_by_name(process_name)
 	if proc == None:
 		print('[!] Process does not found.')
 		return
@@ -3536,7 +3589,7 @@ def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
 		print('setkdp <process name>')
 		return
 	
-	target_proc = xnu_search_process_by_name(args[0])
+	target_proc = xnu_find_process_by_name(args[0])
 	if target_proc == None:
 		print(f'[!] Process {args[0]} does not found')
 		return
