@@ -20,10 +20,11 @@ Huge thanks to Deroko for his original effort! Without it this would not exist.
 Most of gdbinit functions are converted, and a bunch of new functions added.  
 Some of the commands that were passed to lldb command line were converted to internal API.
 
-Added `xinfo`, `tele` , `mbp`, `vmmap` commands.
-Bug fixed for lldb with Python3 on newest macOS.
-Support aarch64.
-Improve better color for determinte region of an address
+- Ported to Python 3.x
+- Added `xinfo`, `tele` , `mbp`, `vmmap`, `xnu_` commands supporting to debug XNU kernel, objective C.
+- Bug fixed for lldb with Python3 on newest macOS.
+- Support aarch64.
+- Improve better color to determinte region of an address
 
 ### Requirements
 
@@ -77,10 +78,3 @@ The data window allows you to display the data of a certain memory location that
 The **skip** command allows you to skip exactly one instruction to next instruction (ignoring control flow!).
 
 The **bpn** command breakpoints the next instruction (ignoring control flow!). It's useful to get out of a loop (when you are at the loop conditional jump tester and you breakpoint the next instruction to let the loop execute without stepping every iteration).
-
-### New XNU commands:
-- setkdp : set kdp_pmap with specific process task_t, then user can easily use `db, dd, dq` or `x/40gx` to read/write userspace address
-- resetkdp : clear kdp_pmap to zero
-- readuseraddr : read userspace address of specific process
-- showallproc : list all xnu processes
-- showallkexts: list all loaded kexts
