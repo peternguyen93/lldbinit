@@ -142,9 +142,6 @@ GlobalListOutput = []
 
 Int3Dictionary = {}
 
-crack_cmds = []
-crack_cmds_noret = []
-
 All_Registers = [
 	"rip", "rax", "rbx", "rbp", "rsp", "rdi", "rsi", "rdx", "rcx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
 	"eip", "eax", "ebx", "ebp", "esp", "edi", "esi", "edx", "ecx"
@@ -300,10 +297,7 @@ def __lldb_init_module(debugger, internal_dict):
 	# load breakpoints from file
 	ci.HandleCommand("command script add -f lldbinit.cmd_LoadBreakPoints lb", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_LoadBreakPointsRva lbrva", res)
-	# cracking friends
-	ci.HandleCommand("command script add -f lldbinit.cmd_crack crack", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_crackcmd crackcmd", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_crackcmd_noret crackcmd_noret", res)
+	
 	# alias for existing breakpoint commands
 	# list all breakpoints
 	ci.HandleCommand("command alias bpl breakpoint list", res)
@@ -318,36 +312,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_show_header show_header", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_tester tester", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_datawin datawin", res)
-	# shortcut command to modify registers content
-	if CONFIG_ENABLE_REGISTER_SHORTCUTS == 1:
-		# x64
-		ci.HandleCommand("command script add -f lldbinit.cmd_rip rip", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rax rax", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rbx rbx", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rbp rbp", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rsp rsp", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rdi rdi", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rsi rsi", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rdx rdx", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_rcx rcx", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r8 r8", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r9 r9", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r10 r10", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r11 r11", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r12 r12", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r13 r13", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r14 r14", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_r15 r15", res)
-		# x86
-		ci.HandleCommand("command script add -f lldbinit.cmd_eip eip", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_eax eax", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_ebx ebx", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_ebp ebp", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_esp esp", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_edi edi", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_esi esi", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_edx edx", res)
-		ci.HandleCommand("command script add -f lldbinit.cmd_ecx ecx", res)
+	
 	if CONFIG_KEYSTONE_AVAILABLE == 1:
 		ci.HandleCommand("command script add -f lldbinit.cmd_asm32 asm32", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_asm64 asm64", res)
@@ -444,9 +409,6 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ "show_header", "show otool output of Mach-O header" ],
 		[ "enablesolib/disablesolib", "enable/disable the stop on library load events" ],
 		[ "enableaslr/disableaslr", "enable/disable process ASLR" ],
-		[ "crack", "return from current function" ],
-		[ "crackcmd", "set a breakpoint and return from that function" ],
-		[ "crackcmd_noret", "set a breakpoint and set a register value. doesn't return from function" ],
 		[ "datawin", "set start address to display on data window" ],
 		[ "rip/rax/rbx/etc", "shortcuts to modify x64 registers" ],
 		[ "eip/eax/ebx/etc", "shortcuts to modify x86 register" ],
@@ -457,6 +419,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'pattern_create', 'create cyclic string'],
 		[ 'pattern_offset', 'find offset in cyclic string'],
 		
+		[ 'addkext', 'add an existed kext into kernel debug session']
 		[ 'showallkexts', 'show all loaded kexts (only for xnu kernel debug)'],
 		[ 'kbp', 'set breakpoint at offset for specific kext (only for xnu kernel debug)'],
 		[ 'ktooff', 'convert current address to offset from basse address of kext (only for xnu kernel debug)'],
@@ -478,6 +441,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
 		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
 		[ 'zone_reload', 'reload zone if network connection is failed'],
+		[ 'showports', 'Show all ports of given process name']
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -1349,226 +1313,6 @@ def cmd_LoadBreakPoints(debugger, command, result, dict):
 		debugger.HandleCommand("breakpoint set --name " + line)
 	f.close()
 
-# command that sets rax to 1 or 0 and returns right away from current function
-# technically just a shortcut to "thread return"
-def cmd_crack(debugger, command, result, dict):
-	'''Return from current function and set return value. Use \'crack help\' for more information.'''
-	help = """
-Return from current function and set return value
-
-Syntax: crack <return value>
-
-Sets rax to return value and returns immediately from current function.
-You probably want to use this at the top of the function you want to return from.
-"""
-
-	cmd = command.split()
-	if len(cmd) != 1:
-		print("[-] error: please insert a return value.")
-		print("")
-		print(help)
-		return
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	# breakpoint disable only accepts breakpoint numbers not addresses
-	value = evaluate(cmd[0])
-	if value == None:
-		print("[-] error: invalid return value.")
-		print("")
-		print(help)
-		return
-
-	frame = get_frame()
-	# if we copy the SBValue from any register and use that copy
-	# for return value we will get that register and rax/eax set
-	# on return
-	# the SBValue to ReturnFromFrame must be eValueTypeRegister type
-	# if we do a lldb.SBValue() we can't set to that type
-	# so we need to make a copy
-	# can we use FindRegister() from frame?
-	return_value = frame.reg["rax"]
-	return_value.value = str(value)
-	get_thread().ReturnFromFrame(frame, return_value)
-
-# set a breakpoint with return command associated when hit
-def cmd_crackcmd(debugger, command, result, dict):
-	'''Breakpoint an address, when breakpoint is hit return from function and set return value. Use \'crackcmd help\' for more information.'''
-	help = """
-Breakpoint an address, when breakpoint is hit return from function and set return value.
-
-Syntax: crackcmd <address> <return value>
-
-Sets rax/eax to return value and returns immediately from current function where breakpoint was set.
-"""
-	global crack_cmds
-
-	cmd = command.split()
-	if len(cmd) == 0:
-		print("[-] error: please check required arguments.")
-		print("")
-		print(help)
-		return
-	elif len(cmd) > 0 and cmd[0] == "help":
-		print(help)
-		return
-	elif len(cmd) < 2:
-		print("[-] error: please check required arguments.")
-		print("")
-		print(help)
-		return        
-
-	# XXX: is there a way to verify if address is valid? or just let lldb error when setting the breakpoint
-	address = evaluate(cmd[0])
-	if address == None:
-		print("[-] error: invalid address value.")
-		print("")
-		print(help)
-		return
-	
-	return_value = evaluate(cmd[1])
-	if return_value == None:
-		print("[-] error: invalid return value.")
-		print("")
-		print(help)
-		return
-	
-	for tmp_entry in crack_cmds:
-		if tmp_entry['address'] == address:
-			print("[-] error: address already contains a crack command.")
-			return
-
-	# set a new entry so we can deal with it in the callback
-	new_crack_entry = {}
-	new_crack_entry['address'] = address
-	new_crack_entry['return_value'] = return_value
-	crack_cmds.append(new_crack_entry)
-
-	target = get_target()
-
-	# we want a global breakpoint
-	breakpoint = target.BreakpointCreateByAddress(address)
-	# when the breakpoint is hit we get this callback executed
-	breakpoint.SetScriptCallbackFunction('lldbinit.crackcmd_callback')
-
-def crackcmd_callback(frame, bp_loc, internal_dict):
-	global crack_cmds
-	# retrieve address we just hit
-	current_bp = bp_loc.GetLoadAddress()
-	print("[+] warning: hit crack command breakpoint at 0x{:x}".format(current_bp))
-
-	crack_entry = None
-	for tmp_entry in crack_cmds:
-		if tmp_entry['address'] == current_bp:
-			crack_entry = tmp_entry
-			break
-
-	if crack_entry == None:
-		print("[-] error: current breakpoint not found in list.")
-		return
-
-	# we can just set the register in the frame and return empty SBValue
-	if is_x64() == True:
-		frame.reg["rax"].value = str(crack_entry['return_value']).rstrip('L')
-	elif is_i386() == True:
-		frame.reg["eax"].value = str(crack_entry['return_value']).rstrip('L')
-	else:
-		print("[-] error: unsupported architecture.")
-		return
-
-	get_thread().ReturnFromFrame(frame, lldb.SBValue())
-	get_process().Continue()
-
-# set a breakpoint with a command that doesn't return, just sets the specified register to a value
-def cmd_crackcmd_noret(debugger, command, result, dict):
-	'''Set a breakpoint and a register to a value when hit. Use \'crackcmd_noret help\' for more information.'''
-	help = """
-Set a breakpoint and a register to a value when hit.
-
-Syntax: crackcmd_noret <address> <register> <value>
-
-Sets the specified register to a value when the breakpoint at specified address is hit, and resumes execution.
-"""
-	global crack_cmds_noret
-
-	cmd = command.split()
-	if len(cmd) == 0:
-		print("[-] error: please check required arguments.")
-		print("")
-		print(help)
-		return
-	if len(cmd) > 0 and cmd[0] == "help":
-		print(help)
-		return
-	if len(cmd) < 3:
-		print("[-] error: please check required arguments.")
-		print("")
-		print(help)
-		return
-
-	address = evaluate(cmd[0])
-	if address == None:
-		print("[-] error: invalid address.")
-		print("")
-		print(help)
-		return
-
-	# check if register is set and valid
-	if (cmd[1] in All_Registers) == False:
-		print("[-] error: invalid register.")
-		print("")
-		print(help)
-		return
-	
-	value = evaluate(cmd[2])
-	if value == None:
-		print("[-] error: invalid value.")
-		print("")
-		print(help)
-		return
-
-	register = cmd[1]
-	
-	for tmp_entry in crack_cmds_noret:
-		if tmp_entry['address'] == address:
-			print("[-] error: address already contains a crack command.")
-			return
-
-	# set a new entry so we can deal with it in the callback
-	new_crack_entry = {}
-	new_crack_entry['address'] = address
-	new_crack_entry['register'] = register
-	new_crack_entry['value'] = value
-	
-	crack_cmds_noret.append(new_crack_entry)
-
-	target = get_target()
-
-	# we want a global breakpoint
-	breakpoint = target.BreakpointCreateByAddress(address)
-	# when the breakpoint is hit we get this callback executed
-	breakpoint.SetScriptCallbackFunction('lldbinit.crackcmd_noret_callback')
-
-def crackcmd_noret_callback(frame, bp_loc, internal_dict):
-	global crack_cmds_noret
-	# retrieve address we just hit
-	current_bp = bp_loc.GetLoadAddress()
-	print("[+] warning: hit crack command no ret breakpoint at 0x{:x}".format(current_bp))
-	crack_entry = None
-	for tmp_entry in crack_cmds_noret:
-		if tmp_entry['address'] == current_bp:
-			crack_entry = tmp_entry
-			break
-
-	if crack_entry == None:
-		print("[-] error: current breakpoint not found in list.")
-		return
-
-	# must be a string!
-	frame.reg[crack_entry['register']].value = str(crack_entry['value']).rstrip('L')
-	get_process().Continue()
-
 # -----------------------
 # Memory related commands
 # -----------------------
@@ -2295,85 +2039,6 @@ def cmd_pattern_offset(debugger, command, result, _dict):
 	print('Value {0}{1}{2} locate at offset {3}{4}{5}'.format(
 		COLORS['YELLOW'], hex(value), COLORS['RESET'], COLORS['YELLOW'], hex(pos), COLORS['RESET'])
 	)
-
-# shortcut functions to modify each register
-def cmd_rip(debugger, command, result, dict):
-	update_register("rip", command)
-
-def cmd_rax(debugger, command, result, dict):
-	update_register("rax", command)
-
-def cmd_rbx(debugger, command, result, dict):
-	update_register("rbx", command)
-
-def cmd_rbp(debugger, command, result, dict):
-	update_register("rbp", command)
-
-def cmd_rsp(debugger, command, result, dict):
-	update_register("rsp", command)
-
-def cmd_rdi(debugger, command, result, dict):
-	update_register("rdi", command)
-
-def cmd_rsi(debugger, command, result, dict):
-	update_register("rsi", command)
-
-def cmd_rdx(debugger, command, result, dict):
-	update_register("rdx", command)
-
-def cmd_rcx(debugger, command, result, dict):
-	update_register("rcx", command)
-
-def cmd_r8(debugger, command, result, dict):
-	update_register("r8", command)
-
-def cmd_r9(debugger, command, result, dict):
-	update_register("r9", command)
-
-def cmd_r10(debugger, command, result, dict):
-	update_register("r10", command)
-
-def cmd_r11(debugger, command, result, dict):
-	update_register("r11", command)
-
-def cmd_r12(debugger, command, result, dict):
-	update_register("r12", command)
-
-def cmd_r13(debugger, command, result, dict):
-	update_register("r13", command)
-
-def cmd_r14(debugger, command, result, dict):
-	update_register("r14", command)
-
-def cmd_r15(debugger, command, result, dict):
-	update_register("r15", command)
-
-def cmd_eip(debugger, command, result, dict):
-	update_register("eip", command)
-
-def cmd_eax(debugger, command, result, dict):
-	update_register("eax", command)
-
-def cmd_ebx(debugger, command, result, dict):
-	update_register("ebx", command)
-
-def cmd_ebp(debugger, command, result, dict):
-	update_register("ebp", command)
-
-def cmd_esp(debugger, command, result, dict):
-	update_register("esp", command)
-
-def cmd_edi(debugger, command, result, dict):
-	update_register("edi", command)
-
-def cmd_esi(debugger, command, result, dict):
-	update_register("esi", command)
-
-def cmd_edx(debugger, command, result, dict):
-	update_register("edx", command)
-
-def cmd_ecx(debugger, command, result, dict):
-	update_register("ecx", command)
 
 # -----------------------------
 # modify eflags/rflags commands
