@@ -30,42 +30,70 @@ load binary has debug infos')
 		return False
 	return True
 
-def xnu_get_all_kexts() -> List:
+# save up cpu cost by create a cache for kext information
+gKextInfos = {} 
+
+def xnu_get_all_kexts() -> dict:
+	kexts = {}
+
 	g_load_kext_summaries = ESBValue('gLoadedKextSummaries')
 	if not xnu_esbvalue_check(g_load_kext_summaries):
-		return []
+		return kexts
 
 	base_address = g_load_kext_summaries.GetIntValue()
 	entry_size = g_load_kext_summaries.entry_size.GetIntValue()
 	kext_summaries_ptr = base_address + size_of('OSKextLoadedKextSummaryHeader')
 
-	kexts = []
-	
 	for i in range(g_load_kext_summaries.numSummaries.GetIntValue()):
 		kext_summary_at = ESBValue.initWithAddressType(kext_summaries_ptr, 'OSKextLoadedKextSummary *')
 		
-		kext_name = kext_summary_at.name.GetSummary()
+		kext_name = kext_summary_at.name.GetStrValue()
 		kext_address = kext_summary_at.address.GetIntValue()
 		kext_size = kext_summary_at.size.GetValue()
 		kext_uuid_addr = kext_summary_at.uuid.GetLoadAddress()
 		kext_uuid = GetUUIDSummary(read_mem(kext_uuid_addr, size_of('uuid_t')))
 
-		kexts.append((kext_name, kext_uuid, kext_address, kext_size))
+		# kext_name format : com.apple.<type of kext>.<kext bin name>
+		kext_file_name = kext_name.split('.')[-1]
+		kexts[kext_file_name] = {
+			'name' : kext_name, # original kext name
+			'uuid' : kext_uuid,
+			'address' : kext_address,
+			'size' : kext_size
+		}
 		kext_summaries_ptr += entry_size
 	
 	return kexts
 
-def xnu_get_kext_base_address(kext_name):
-	kext_infos = xnu_get_all_kexts()
-	if not kext_infos:
-		return 0
+def xnu_load_kextinfo():
+	global gKextInfos
+	if not gKextInfos:
+		gKextInfos = xnu_get_all_kexts()
 
-	for kext_info in kext_infos:
-		mod_kext_name = bytes(kext_info[0]).strip(b'\x00').decode('utf-8')
-		if kext_name in mod_kext_name:
-			return kext_info.address[2]
+def xnu_get_kext_base_address(kext_name : str) -> int:
+	global gKextInfos
+	
+	xnu_load_kextinfo()
 
-	return 0
+	try:
+		return gKextInfos[kext_name]['address']
+	except KeyError:
+		return -1
+
+def xnu_showallkexts():
+	global gKextInfos
+	
+	xnu_load_kextinfo()
+
+	longest_kext_name = len(max(gKextInfos, key=lambda kext_name: len(kext_name)))
+	
+	print('-- Loaded kexts:')
+	for kext_bin_name in gKextInfos:
+		kext_uuid    = gKextInfos[kext_bin_name]['uuid']
+		kext_address = gKextInfos[kext_bin_name]['address']
+		kext_size    = gKextInfos[kext_bin_name]['size']
+		kext_name    = gKextInfos[kext_bin_name]['name']
+		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t0x{kext_address:X}\t{kext_size}')
 
 def xnu_write_task_kdp_pmap(target, task) -> bool:
 	kdp_pmap = ESBValue('kdp_pmap')

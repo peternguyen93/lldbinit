@@ -94,7 +94,7 @@ except:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 	pass
 
-VERSION = "2.1"
+VERSION = "2.2"
 
 #
 # User configurable options
@@ -124,16 +124,6 @@ CONFIG_LOG_LEVEL = "LOG_NONE"
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
 DATA_WINDOW_ADDRESS = 0
 
-# old_x86 = { "eax": 0, "ecx": 0, "edx": 0, "ebx": 0, "esp": 0, "ebp": 0, "esi": 0, "edi": 0, "eip": 0, "eflags": 0,
-# 		"cs": 0, "ds": 0, "fs": 0, "gs": 0, "ss": 0, "es": 0, }
-
-# old_x64 = { "rax": 0, "rcx": 0, "rdx": 0, "rbx": 0, "rsp": 0, "rbp": 0, "rsi": 0, "rdi": 0, "rip": 0, "rflags": 0,
-# 		"cs": 0, "fs": 0, "gs": 0, "r8": 0, "r9": 0, "r10": 0, "r11": 0, "r12": 0, 
-# 		"r13": 0, "r14": 0, "r15": 0 }
-
-# old_arm = { "r0": 0, "r1": 0, "r2": 0, "r3": 0, "r4": 0, "r5": 0, "r6": 0, "r7": 0, "r8": 0, "r9": 0, "r10": 0, 
-# 			"r11": 0, "r12": 0, "sp": 0, "lr": 0, "pc": 0, "cpsr": 0 }
-
 old_register = {}
 
 arm_type = "thumbv7-apple-ios"
@@ -142,13 +132,7 @@ GlobalListOutput = []
 
 Int3Dictionary = {}
 
-All_Registers = [
-	"rip", "rax", "rbx", "rbp", "rsp", "rdi", "rsi", "rdx", "rcx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-	"eip", "eax", "ebx", "ebp", "esp", "edi", "esi", "edx", "ecx"
-]
-
 flag_regs = ('rflags', 'eflags', 'cpsr')
-
 segment_regs = ("cs", "ds", "es", "gs", "fs", "ss", "cs", "gs", "fs")
 
 x86_registers = [
@@ -3173,15 +3157,9 @@ def cmd_addkext(debugger, command, result, dict):
 		print('[!] "target modules add" error :', res.GetError())
 
 	# find base address of kext module
-	load_kext_base_addr = 0
-	kexts = xnu_get_all_kexts()
-	for kext_name, kext_uuid, kext_address, kext_size in kexts:
-		if kext_binary_path.name in kext_name:
-			load_kext_base_addr = kext_address
-			break
-	
-	if not load_kext_base_addr:
-		print('[!] Unable to find base address of kext binary {kext_binary_path}')
+	load_kext_base_addr = xnu_get_kext_base_address(kext_binary_path.name)
+	if load_kext_base_addr == -1:
+		print(f'[!] Unable to find base address of kext binary {kext_binary_path}')
 		return 1
 	
 	res = lldb.SBCommandReturnObject()
@@ -3190,19 +3168,15 @@ def cmd_addkext(debugger, command, result, dict):
 	
 	if not res.Succeeded():
 		print('[!] "target modules load" error :', res.GetError())
+		return 1
 
+	print('[+] Done.')
 	return 0
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
-	kexts = xnu_get_all_kexts()
+	xnu_showallkexts()
 
-	longest_kext_name = len(max(kexts, key=lambda x: len(x[0]))[0])
-	
-	print('-- Loaded kexts:')
-	for kext_name, kext_uuid, kext_address, kext_size in kexts:
-		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t0x{kext_address:X}\t{kext_size}')
-
-def cmd_xnu_breakpoint(debugger, command, result, dict):
+def cmd_xnu_breakpoint(debugger, command, result, dict):	
 	args = command.split(' ')
 	if len(args) < 2:
 		print('kbp <kext_name> <offset>')
