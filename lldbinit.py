@@ -384,6 +384,9 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ipc_task_port showtaskipc", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
 
+	# xnu load kext
+	ci.HandleCommand("command script add -f lldbinit.cmd_addkext addkext", res)
+
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_reverse_snapshot vmrevert", res)
@@ -3491,6 +3494,39 @@ def cmd_xnu_show_ports(debugger, command, result, _dict):
 	return True
 
 # -------------------------------------------------------
+
+def cmd_addkext(debugger, command, result, dict):
+	kext_binary_path = Path(command)
+
+	if not kext_binary_path.exists():
+		print('[!] Kext binary is not exists')
+		return 1
+
+	res = lldb.SBCommandReturnObject()
+	debugger.GetCommandInterpreter().HandleCommand(f"target modules add {str(kext_binary_path)}", res)
+	if not res.Succeeded():
+		print('[!] "target modules add" error :', res.GetError())
+
+	# find base address of kext module
+	load_kext_base_addr = 0
+	kexts = xnu_get_all_kexts()
+	for kext_name, kext_uuid, kext_address, kext_size in kexts:
+		if kext_binary_path.name in kext_name:
+			load_kext_base_addr = kext_address
+			break
+	
+	if not load_kext_base_addr:
+		print('[!] Unable to find base address of kext binary {kext_binary_path}')
+		return 1
+	
+	res = lldb.SBCommandReturnObject()
+	debugger.GetCommandInterpreter().HandleCommand(
+		f"target modules load --file {str(kext_binary_path)} --slide {hex(load_kext_base_addr)}", res)
+	
+	if not res.Succeeded():
+		print('[!] "target modules load" error :', res.GetError())
+
+	return 0
 
 def cmd_xnu_showallkexts(debugger, command, result, dict):
 	kexts = xnu_get_all_kexts()
