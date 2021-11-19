@@ -11,6 +11,17 @@ from utils import *
 from ctypes import *
 import re
 
+kobject_types = [
+	'', 'THREAD_CONTROL', 'TASK_CONTROL', 'HOST', 'HOST_PRIV', 'PROCESSOR',
+	'PSET', 'PSET_NAME', 'TIMER', 'PAGER_REQ', 'DEVICE', 'XMM_OBJECT',
+	'XMM_PAGER', 'XMM_KERNEL', 'XMM_REPLY', 'NOTDEF 15', 'NOTDEF 16', 'HOST_SEC',
+	'LEDGER', 'MASTER_DEV', 'TASK_NAME', 'SUBSYTEM', 'IO_DONE_QUE', 'SEMAPHORE',
+	'LOCK_SET', 'CLOCK', 'CLOCK_CTRL' , 'IOKIT_SPARE', 'NAMED_MEM', 'IOKIT_CON',
+	'IOKIT_OBJ', 'UPL', 'MEM_OBJ_CONTROL', 'AU_SESSIONPORT', 'FILEPORT', 'LABELH',
+	'TASK_RESUME', 'VOUCHER', 'VOUCHER_ATTR_CONTROL', 'WORK_INTERVAL', 'UX_HANDLER',
+	'UEXT_OBJECT', 'ARCADE_REG', 'TASK_INSPECT', 'TASK_READ', 'THREAD_INSPECT', 'THREAD_READ'
+]
+
 EMBEDDED_PANIC_MAGIC = 0x46554E4B
 EMBEDDED_PANIC_STACKSHOT_SUCCEEDED_FLAG = 0x02
 
@@ -257,8 +268,15 @@ def get_ipc_space_table(ipc_space : ESBValue) -> tuple:
 	""" Return the tuple of (entries, size) of the table for a space
 	"""
 	table = ipc_space.is_table.__hazard_ptr
-	if table.GetIntValue():
-		return (table, table.ie_size.GetIntValue())
+	if table.IsValid():
+		# macOS 12 structure
+		if table.GetIntValue():
+			return (table, table.ie_size.GetIntValue())
+	else:
+		# macOS 11 structure
+		table = ipc_space.is_table
+		if table.GetIntValue():
+			return (table, ipc_space.is_table_size.GetIntValue())
 	return (None, 0)
 
 def get_ipc_task(proc : ESBValue) -> ESBValue:
@@ -269,6 +287,9 @@ def get_proc_from_task(task : ESBValue) -> ESBValue:
 
 def get_destination_proc_from_port(port : ESBValue) -> ESBValue:
 	dest_space = port.ip_receiver
+	if not dest_space.IsValid():
+		dest_space = port.data.receiver
+
 	task = dest_space.is_task
 	proc = get_proc_from_task(task)
 	return proc
@@ -300,10 +321,13 @@ def get_ipc_port_name(ie_bits : int, ipc_idx : int) -> int:
 def get_waitq_sets(wqset_q : ESBValue) -> list:
 	sets = []
 
-	if wqset_q.IsNull() == 0:
+	if wqset_q.IsValid() or wqset_q.IsNull():
 		return sets
 
 	ref = wqset_q.waitq_set_id
+	if ref.IsValid():
+		return sets
+
 	while not ref.wqr_value.IsNull():
 		if ref.wqr_value.GetIntValue() & 1:
 			sets.append(get_waitq_set_id_string(ref.wqr_value))
@@ -337,10 +361,20 @@ def get_kobject_from_port(portval : ESBValue) -> str:
 		return ''
 
 	kobject_val = portval.ip_kobject
+	if not kobject_val.IsValid():
+		kobject_val = portval.kdata.kobject # use old way
+
 	kobject_str = "{0: <#020x}".format(kobject_val.GetIntValue())
 	objtype_index = io_bits & 0x3ff
-	objtype_str   = get_enum_name('ipc_kotype_t', objtype_index, "IKOT_")
-	if objtype_str == 'IOKIT_OBJECT':
+	try:
+		objtype_str   = get_enum_name('ipc_kotype_t', objtype_index, "IKOT_")
+	except NameError:
+		try:
+			objtype_str = kobject_types[objtype_index]
+		except IndexError:
+			objtype_str = 'UNKNOW'
+
+	if objtype_str == 'IOKIT_OBJECT' or objtype_str == 'IOKIT_OBJ':
 		iokit_classnm = get_iokit_object_type_str(kobject_val)
 		desc_str = "kobject({:s}:{:s})".format(objtype_str, iokit_classnm)
 	else:
@@ -419,7 +453,10 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 	elif ie_bits & 0x00080000:
 		ipc_entry_info['right'] = 'Set'
 		psetval = ie_object.CastTo('ipc_pset *')
-		set_str = get_waitq_sets(psetval.ips_wqset.wqset_q)
+		try:
+			set_str = get_waitq_sets(psetval.ips_wqset.wqset_q)
+		except AttributeError:
+			set_str = get_waitq_sets(psetval.ips_messages.data.pset.setq.wqset_q)
 		ipc_entry_info['nsets'] = len(set_str)
 		ipc_entry_info['nmsgs'] = 0
 	else:
@@ -500,6 +537,10 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 
 def print_ipc_information(ipc_space : ESBValue):
 	entry_table, num_entries = get_ipc_space_table(ipc_space)
+	if entry_table == None:
+		print('[!] Unable to retrieve entry_table')
+		return
+
 	entry_table_address = entry_table.GetIntValue()
 
 	print("{0: <20s} {1: <20s} {2: <20s} {3: <8s} {4: <10s} {5: <18s} {6: >8s} {7: <8s}".format(

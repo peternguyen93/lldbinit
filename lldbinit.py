@@ -403,7 +403,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'pattern_create', 'create cyclic string'],
 		[ 'pattern_offset', 'find offset in cyclic string'],
 		
-		[ 'addkext', 'add an existed kext into kernel debug session']
+		[ 'addkext', 'add an existed kext into kernel debug session'],
 		[ 'showallkexts', 'show all loaded kexts (only for xnu kernel debug)'],
 		[ 'kbp', 'set breakpoint at offset for specific kext (only for xnu kernel debug)'],
 		[ 'ktooff', 'convert current address to offset from basse address of kext (only for xnu kernel debug)'],
@@ -425,7 +425,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_show_chunk_with_regex', 'find location of chunk address by using regex'],
 		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
 		[ 'zone_reload', 'reload zone if network connection is failed'],
-		[ 'showports', 'Show all ports of given process name']
+		[ 'showports', 'Show all ports of given process name'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
