@@ -90,9 +90,8 @@ from xnu import *
 try:
 	from keystone import *
 	CONFIG_KEYSTONE_AVAILABLE = 1
-except:
+except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
-	pass
 
 VERSION = "2.2"
 
@@ -2808,7 +2807,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 	
 	assemble_keystone(KS_ARCH_ARM64, KS_MODE_ARM, inst_list)
 
-# XXX: help
+# iphone connect to lldb server command
 def cmd_IphoneConnect(debugger, command, result, dict): 
 	'''Connect to debugserver running on iPhone'''
 	global GlobalListOutput
@@ -3269,7 +3268,7 @@ def cmd_xnu_set_kdp_pmap(debugger, command, result, dict):
 		print(f'[!] Process {args[0]} does not found')
 		return
 	
-	if xnu_write_task_kdp_pmap(debugger.GetSelectedTarget(), target_proc.task):
+	if xnu_write_task_kdp_pmap(target_proc.task):
 		print('[+] Set kdp_pmap ok.')
 	else:
 		print('[!] Set kdp_pmap failed.')
@@ -3279,7 +3278,7 @@ def cmd_xnu_reset_kdp_pmap(debugger, command, result, dict):
 		print('[!] cmd_xnu_set_kdp_pmap() only works on kdp-remote')
 		return
 
-	if not xnu_reset_kdp_pmap(debugger.GetSelectedTarget()):
+	if not xnu_reset_kdp_pmap():
 		print(f'[!] Reset kdp_pmap failed.')
 		return
 
@@ -3540,8 +3539,6 @@ def display_objc():
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
 
-#    command = '(void*)object_getClass({})'.format(get_instance_object())
-#    value = get_frame().EvaluateExpression(command, options).GetObjectDescription()
 	className = objc_get_classname(get_instance_object())
 	if not className:
 		return
@@ -4025,13 +4022,10 @@ def dump_jump_arm64(cpsr):
 
 def print_registers():
 	if is_i386(): 
-		# reg32()
 		register_format = x86_registers
 	elif is_x64():
-		# reg64()
 		register_format = x86_64_registers
 	elif is_arm():
-		# regarm()
 		register_format = arm_32_registers
 	elif is_aarch64():
 		register_format = aarch64_registers

@@ -3,9 +3,6 @@ Small script support xnu kernel debugging
 Author : peternguyen
 '''
 
-from errno import ESHUTDOWN
-from os import stat
-from typing import List
 import lldb
 from utils import *
 from ctypes import *
@@ -106,7 +103,7 @@ def xnu_showallkexts():
 		kext_name    = gKextInfos[kext_bin_name]['name']
 		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t0x{kext_address:X}\t{kext_size}')
 
-def xnu_write_task_kdp_pmap(target, task) -> bool:
+def xnu_write_task_kdp_pmap(task : ESBValue) -> bool:
 	kdp_pmap = ESBValue('kdp_pmap')
 	if not xnu_esbvalue_check(kdp_pmap):
 		return False
@@ -121,7 +118,7 @@ def xnu_write_task_kdp_pmap(target, task) -> bool:
 
 	return True
 
-def xnu_reset_kdp_pmap(target) -> bool:
+def xnu_reset_kdp_pmap() -> bool:
 	kdp_pmap = ESBValue('kdp_pmap')
 	if not xnu_esbvalue_check(kdp_pmap):
 		return False
@@ -134,7 +131,7 @@ def xnu_reset_kdp_pmap(target) -> bool:
 
 	return True
 
-def xnu_read_user_address(target, task, address, size) -> bytes:
+def xnu_read_user_address(target : lldb.SBTarget, task : ESBValue, address : int, size : int) -> bytes:
 	out = ''
 
 	if GetConnectionProtocol() != 'kdp':
@@ -152,7 +149,7 @@ def xnu_read_user_address(target, task, address, size) -> bytes:
 
 	return out
 
-def xnu_write_user_address(target, task, address, value):
+def xnu_write_user_address(target : lldb.SBTarget, task : ESBValue, address : int, value : int) -> bool:
 	if GetConnectionProtocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return False
@@ -169,7 +166,7 @@ def xnu_write_user_address(target, task, address, value):
 
 	return True
 
-def xnu_find_process_by_name(search_proc_name):
+def xnu_find_process_by_name(search_proc_name : str) -> ESBValue:
 	allproc = ESBValue('allproc')
 	if not allproc.IsValid():
 		return None
