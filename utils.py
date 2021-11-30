@@ -668,6 +668,8 @@ class ESBValue(object):
 		super().__init__()
 		self.sb_var_name = ''
 		self.sb_value = None
+		# store metadata
+		self.sb_attributes = {}
 
 		if var_name == 'classcall':
 			# skip initialize for classcall
@@ -703,6 +705,16 @@ class ESBValue(object):
 		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 		new_esbvalue.sb_var_name = 'var_name'
 		return new_esbvalue
+
+	# save metadata for this ESBValue
+	def set_attribute(self, attr_name, value):
+		self.sb_attributes[attr_name] = value
+	
+	def get_attribute(self, attr_name):
+		try:
+			return self.sb_attributes[attr_name]
+		except KeyError:
+			return None
 	
 	def __getattr__(self, name):
 		if name == 'sb_value':
@@ -734,6 +746,13 @@ class ESBValue(object):
 	
 	def GetIntValue(self) -> int:
 		value = self.GetValue()
+		type_name = self.GetTypeName()
+		if type_name.startswith('uint8_t') or type_name.startswith('int8_t') or \
+				type_name.startswith('char'):
+			# trying to cast value to int in Python
+			value = value.strip("'\\x")
+			return int(value, 16)
+
 		if not value:
 			return 0
 		if value.startswith('0x'):
@@ -808,6 +827,12 @@ class ESBValue(object):
 			return self.sb_value.GetName()
 		
 		return ''
+	
+	def GetTypeName(self) -> str:
+		if not self.sb_value:
+			return ''
+		
+		return self.sb_value.GetTypeName()
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory
