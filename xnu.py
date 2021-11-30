@@ -905,12 +905,15 @@ class XNUZones:
 		global ZoneMeta
 		global gkalloc_heap_names
 		# get all zones symbols
-		self.zone_list = []
 		self.target = target
 		self.kalloc_heap_names = []
-		self.zone_access_cache = {}
+		self.zones_access_cache = {}
+		self.zone_index_array = []
 		self.logged_zones = {}
 		self.pointer_size = get_pointer_size()
+		self.zone_security_array = ESBValue('zone_security_array')
+		self.zone_struct_size = size_of('zone')
+		self.zone_array_address = 0
 
 		zone_array = ESBValue('zone_array')
 		if not xnu_esbvalue_check(zone_array):
@@ -920,137 +923,110 @@ class XNUZones:
 		if not xnu_esbvalue_check(num_zones):
 			return
 		
+		self.zone_array_address = zone_array.GetLoadAddress() # save zone_array base address for later used
 		if len(gkalloc_heap_names) < 4:
 			kalloc_heap_names = ESBValue('kalloc_heap_names')
 			for i in range(4):
 				kalloc_heap_name = kalloc_heap_names[i].CastTo('char *')
 				gkalloc_heap_names.append(kalloc_heap_name.GetStrValue())
 
-		for i in range(num_zones.GetIntValue()):
-			self.zone_list.append(zone_array[i].GetLoadAddress())
-			self.zone_access_cache[self.getZoneName(zone_array[i])] = i
-		
-		# parse boot-args to findout zlog
-		boot_args = xnu_showbootargs()
-		zlog_array = re.findall(r'(zlog|zlog(\d+))=([a-z0-9\.]+)', boot_args)
-		if zlog_array:
-			for zlog in zlog_array:
-				self.logged_zones[zlog[2]] = self.zone_access_cache[zlog[2]]
-				if zlog[0] == 'zlog':
-					break
+		for idx in range(num_zones.GetIntValue()):
+			zone_name = self._extract_zone_name(zone_array[idx])
+			zone = zone_array[idx]
+			zone.set_attribute('zone_name', zone_name)
+			zone.set_attribute('zone_idx', idx)
+
+			self.zones_access_cache[zone_name] = zone
+			self.zone_index_array.append(zone_name)
+
+			if self.is_zone_logging(zone):
+				# cache logged zone for lookup
+				self.logged_zones[zone_name] = zone
 		
 		if ESBValue('zp_nopoison_cookie').IsValid():
 			ZoneMeta = ZoneMetaOld
 		else:
 			ZoneMeta = ZoneMetaNew
-
-	def __len__(self):
-		return len(self.zone_list)
 	
-	def __iter__(self):
-		for zone_addr in self.zone_list:
-			yield ESBValue.initWithAddressType(zone_addr, 'zone *')
-
-	def __getitem__(self, idx):
-		if idx >= len(self.zone_list):
-			return None
-		
-		# cast to 'zone *'
-		return ESBValue.initWithAddressType(self.zone_list[idx], 'zone *')
-	
-	@classmethod
-	def getZoneName(cls, zone):
+	def _extract_zone_name(self, zone : ESBValue) -> str:
 		z_name = zone.z_name.GetStrValue()
-		heap_name_idx = zone.kalloc_heap.GetIntValue()
+			
+		if zone.kalloc_heap.IsValid():
+			heap_name_idx = zone.kalloc_heap.GetIntValue()
+		else:
+			# macOS 12 will change how we retrieve kalloc heap name checkout zone_heap_name
+			zone_idx = (zone.GetLoadAddress() - self.zone_array_address) // self.zone_struct_size
+			heap_name_idx = self.zone_security_array[zone_idx].z_kheap_id.GetIntValue()
+
 		if heap_name_idx < 4:
 			return gkalloc_heap_names[heap_name_idx] + z_name
+
 		return z_name
 
-	def getallzones_name(self):
-		zone_names = []
-		for i in range(len(self)):
-			zone_names.append(self.getZoneName(self[i]))
-		
-		return zone_names
+	def __len__(self):
+		return len(self.zones_access_cache)
 	
-	def getZoneByName(self, zone_name):
-		if zone_name in self.zone_access_cache:
-			return self[self.zone_access_cache[zone_name]]
+	def __iter__(self):
+		for zone_name in self.zones_access_cache:
+			yield self.zones_access_cache[zone_name]
 
-		for i in range(len(self)):
-			zone = self[i]
-			if self.getZoneName(zone) == zone_name:
-				return zone
+	def __getitem__(self, idx):
+		if idx >= len(self.zone_index_array):
+			return None
+		
+		zone_name = self.zone_index_array[idx]
+		return self.zones_access_cache[zone_name]
+	
+	def has_zone_name(self, zone_name : str) -> bool:
+		if zone_name not in self.zones_access_cache:
+			return False
+		return True
+	
+	def iter_zone_name(self):
+		for zone_name in self.zones_access_cache:
+			yield zone_name
+	
+	def get_zone_by_name(self, zone_name : str) -> ESBValue:
+		if zone_name in self.zones_access_cache:
+			return self.zones_access_cache[zone_name]
 		
 		return None
 	
-	def getZoneIdxbyName(self, zone_name):
-		if zone_name in self.zone_access_cache:
-			return self.zone_access_cache[zone_name]
-
-		for i in range(len(self)):
-			if self.getZoneName(self[i]) == zone_name:
-				return i
-
-		return -1
+	def get_zone_id_by_name(self, zone_name : str) -> int:
+		return self.zone_index_array.index(zone_name)
 	
-	def getZonebyRegex(self, zone_name_regex):
-		zone_idxs = []
-
-		if self.zone_access_cache:
-			for zone_name in self.zone_access_cache:
-				if re.match(zone_name_regex, zone_name):
-					zone_idxs.append(self.zone_access_cache[zone_name])
-
-		else:
-			for i in range(len(self)):
-				z_name = self.getZoneName(self[i])
-				if re.match(zone_name_regex, z_name):
-					zone_idxs.append(i)
-
-		return zone_idxs
-	
-	def findzone_by_names(self, name):
+	def get_zones_by_regex(self, zone_name_regex : str) -> list:
 		zones = []
 
-		if self.zone_access_cache:
-			for zone_name in self.zone_access_cache:
-				if zone_name == name:
-					idx = self.zone_access_cache[zone_name]
-					zones.append((idx, self[idx]))
-		else:
+		if self.zones_access_cache:
+			for zone_name in self.zones_access_cache:
+				if re.match(zone_name_regex, zone_name):
+					zones.append(self.zones_access_cache[zone_name])
 
-			for i in range(len(self)):
-				zone = self[i]
-				z_name = self.getZoneName(zone)
-				if z_name == name:
-					zones.append((i, zone))
-				
 		return zones
-	
-	def is_zonelogging(self, zone_idx):
-		return self[zone_idx].zlog_btlog.GetIntValue() != 0
+
+	def is_zone_logging(self, zone : ESBValue) -> bool:
+		return zone.zlog_btlog.GetIntValue() != 0
 	
 	def show_zone_being_logged(self):
-
 		if not self.logged_zones:
 			return
 		
 		for logged_zone_name in self.logged_zones:
-			logged_zone_idx = self.logged_zones[logged_zone_name]
-			zone = self[logged_zone_idx]
+			zone = self.logged_zones[logged_zone_name]
+			zone_name = zone.get_attribute('zone_name')
+			logged_zone_idx = zone.get_attribute('zone_idx')
 			zlog_btlog = zone.zlog_btlog
-			zone_name = self.getZoneName(zone)
 			if zlog_btlog.GetIntValue() != 0:
 				print(f'- zone_array[{logged_zone_idx}]: {zone_name} log at {zlog_btlog.GetValue()}')
 	
-	def getLoggedZoneIdxByName(self, zone_name):
+	def get_logged_zone_index_by_name(self, zone_name : str) -> int:
 		try:
-			return self.logged_zones[zone_name]
+			return self.logged_zones[zone_name].get_attribute('zone_idx')
 		except KeyError:
 			return -1
 	
-	def zone_find_stack_elem(self, zone_idx, target_element, action=0):
+	def zone_find_stack_elem(self, zone_name : str, target_element : int, action=0):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
 			refer to the given zone element.
 			Usage: zstack_findelem <btlog addr> <elem addr>
@@ -1060,7 +1036,6 @@ class XNUZones:
 			zfree operations which tells you who touched the element in the recent past.  This also makes
 			double-frees readily apparent.
 		"""
-
 		log_records = ESBValue('log_records')
 		corruption_debug_flag = ESBValue('corruption_debug_flag')
 
@@ -1068,7 +1043,15 @@ class XNUZones:
 			print("[!] Zone logging with corruption detection not enabled. Add '-zc zlog=<zone name>' to boot-args.")
 			return False
 		
-		zone = self[zone_idx]
+		zone = self.get_zone_by_name(zone_name)
+		if zone == None:
+			print(f'[!] Unable to find this zone {zone_name}')
+			return
+		
+		if not self.is_zone_logging(zone):
+			print(f'[!] Unable to track this zone {zone_name}, please add this zone into boot-args')
+			return
+		
 		btlog_ptr = zone.zlog_btlog.CastTo('btlog_t *')
 		
 		btrecord_size = btlog_ptr.btrecord_size.GetIntValue()
@@ -1087,12 +1070,18 @@ class XNUZones:
 		else:
 			target_element = target_element ^ 0xFFFFFFFF
 
+		'''
+			Loop through element_hash_queue linked list to find record information of our target_element
+		'''
 		while hashelem.GetIntValue() != 0:
 			if hashelem.elem.GetIntValue() == target_element:
+				# found record information of target_element
+
 				recindex = hashelem.recindex.GetIntValue()
 
 				recoffset = recindex * btrecord_size
 				record = ESBValue.initWithAddressType(btrecords + recoffset, 'btlog_record_t *')
+				# extract action for this chunk address and see if this chunk was freed or allocated
 				record_operation = record.operation.GetIntValue()
 
 				if not action:
@@ -1105,7 +1094,7 @@ class XNUZones:
 					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
 
 					print(out_str)
-					print(self.GetBtlogBacktrace(depth, record))
+					print(self.get_btlog_backtrace(depth, record))
 					print(' \n')
 
 					if record_operation == prev_operation:
@@ -1114,21 +1103,22 @@ class XNUZones:
 						else:
 							print("{0: <s} DOUBLE OP! {1: <s}".format(('*' * 8), ('*' * 8)))
 						return True
+
 				elif action == 1 and not record_operation:
 					# show free only
 					out_str = ('-' * 8)
 					out_str += "OP: FREE.  "
 					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
 					print(out_str)
-					print(self.GetBtlogBacktrace(depth, record))
+					print(self.get_btlog_backtrace(depth, record))
 					print(' \n')
 				elif action == 2 and record_operation:
-					# show free only
+					# show allocation only
 					out_str = ('-' * 8)
 					out_str += "OP: ALLOC.  "
 					out_str += "Stack Index {0: <d} {1: <s}\n".format(recindex, ('-' * 8))
 					print(out_str)
-					print(self.GetBtlogBacktrace(depth, record))
+					print(self.get_btlog_backtrace(depth, record))
 					print(' \n')
 				
 				prev_operation = record_operation
@@ -1141,7 +1131,7 @@ class XNUZones:
 			if scan_items % 100 == 0:
 				print("Scanning is ongoing. {0: <d} items scanned since last check." .format(scan_items))
 	
-	def GetBtlogBacktrace(self, depth, zstack_record):
+	def get_btlog_backtrace(self, depth, zstack_record):
 		""" Helper routine for getting a BT Log record backtrace stack.
 			params:
 				depth:int - The depth of the zstack record
@@ -1174,7 +1164,7 @@ class XNUZones:
 
 		return out_str
 	
-	def ZoneIteratePageQueue(self, page):
+	def zone_iterate_queue(self, page):
 		cur_page_addr = page.packed_address.GetIntValue()
 		while cur_page_addr:
 			meta = ZoneMeta(self, cur_page_addr, isPageIndex=True)
@@ -1183,9 +1173,7 @@ class XNUZones:
 			page = meta.meta.zm_page_next
 			cur_page_addr = page.packed_address.GetIntValue()
 	
-	def IterateAllChunkAt(self, zone_idx):
-		zone = self[zone_idx]
-
+	def iter_chunks_at_zone(self, zone : ESBValue):
 		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
 			yield 'None', 0
 		
@@ -1196,16 +1184,16 @@ class XNUZones:
 			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty, zone.z_pageq_va]
 
 		for head in iteration_list:
-			for meta in self.ZoneIteratePageQueue(head):
+			for meta in self.zone_iterate_queue(head):
 				for elem in meta.iterateElements():
 					status = 'Allocated'
 					if meta.isInFreeList(elem):
 						status = 'Freed'
 					
 					yield status, elem
-			
-	def GetChunkInfoAtZone(self, zone_idx, chunk_addr):
-		for status, elem in self.IterateAllChunkAt(zone_idx):
+	
+	def get_chunk_info_at_zone(self, zone : ESBValue, chunk_addr : int) -> str:
+		for status, elem in self.iter_chunks_at_zone(zone):
 			if status == 'None':
 				break
 
@@ -1213,48 +1201,66 @@ class XNUZones:
 				return status
 		
 		return 'None'
+			
+	def get_chunk_info_at_zone_name(self, zone_name : str, chunk_addr : int) -> str:
+		if not self.has_zone_name(zone_name):
+			return 'None'
+		
+		zone = self.zones_access_cache(zone_name)
+		return self.get_chunk_info_at_zone(zone, chunk_addr)
 	
-	def GetChunkInfoWithRange(self, from_zone_idx, to_zone_idx, chunk_addr):
-		assert (from_zone_idx >=0 and to_zone_idx < len(self)) and (from_zone_idx < to_zone_idx), \
-						'from_zone_idx or to_zone_idx is out of bound'
+	def get_info_chunks_at_range(self, from_zone_idx, to_zone_idx, chunk_addr):
+		# assert (from_zone_idx >=0 and to_zone_idx < len(self)) and (from_zone_idx < to_zone_idx), \
+		# 				'from_zone_idx or to_zone_idx is out of bound'
 
-		for i in range(from_zone_idx, to_zone_idx):
-			zone = self[i]
-			ret = self.GetChunkInfoAtZone(i, chunk_addr)
+		# for i in range(from_zone_idx, to_zone_idx):
+		# 	zone = self[i]
+		# 	ret = self.get_chunk_info_at_zone(i, chunk_addr)
+		# 	if ret != 'None':
+		# 		info = {
+		# 			'zone_name': zone.get_attribute('zone_name'),
+		# 			'zone_idx': i,
+		# 			'status': ret 
+		# 		}
+		# 		return info
+		
+		return None
+	
+	def find_chunk_info(self, chunk_addr : int):
+		'''
+			Walk through the hold zone in zone_array, this method could take time
+		'''
+
+		for zone_name in self.zones_access_cache:
+			zone = self.zones_access_cache[zone_name]
+			ret = self.get_chunk_info_at_zone_name(zone_name, chunk_addr)
 			if ret != 'None':
 				info = {
-					'zone_name':self.getZoneName(zone),
-					'zone_idx': i,
+					'zone_name':zone.get_attribute('zone_name'),
+					'zone_idx': zone.get_attribute('zone_idx'),
 					'status': ret 
 				}
 				return info
 		
 		return None
-	
-	def FindChunkInfo(self, chunk_addr):
-		
-		for i in range(len(self)):
-			zone = self[i]
-			ret = self.GetChunkInfoAtZone(i, chunk_addr)
-			if ret != 'None':
-				info = {
-					'zone_name':self.getZoneName(zone),
-					'zone_idx': i,
-					'status': ret 
-				}
-				return info
-		
-		return None
 
-	def InspectZone(self, zone_idx):
-		zone = self[zone_idx]
-		print('Zone: ', COLORS['YELLOW'], self.getZoneName(zone), COLORS['RESET'])
+	def inspect_zone_name(self, zone_name : str):
+		'''
+			List all chunks and their status for a zone
+		'''
+
+		zone = self.get_zone_by_name(zone_name)
+		if zone == None:
+			print(f'[!] zone: {zone_name} does not exists.')
+			return
+
+		print('Zone: ', COLORS['YELLOW'], zone.get_attribute('zone_name'), COLORS['RESET'])
 		print(COLORS['BOLD'], end='')
-		print("{:>5s}  {:<20s} {:<10s}".format("#", "Element", "State"))
+		print("{:>5s}  {:<20s} {:<10s}".format("#", "Element", "Status"))
 		print(COLORS['RESET'], end='')
 
 		num = 0
-		for status, elem in self.IterateAllChunkAt(zone_idx):
+		for status, elem in self.iter_chunks_at_zone(zone):
 			if status == 'None':
 				break
 
@@ -1263,6 +1269,6 @@ class XNUZones:
 				color = COLORS["RED"]
 			
 			print(color, end='')
-			print("{:5d}  0x{:<20X} {:10s}".format(num, elem, status))
+			print("{:5d}  0x{:<20X} {:<10s}".format(num, elem, status))
 			print(COLORS['RESET'], end='')
 			num+=1
