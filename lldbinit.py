@@ -318,7 +318,7 @@ def __lldb_init_module(debugger, internal_dict):
 
 	# xnu zone commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone zone_list", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_zones_by_name zone_find_zones_index", res)
+	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_zones_by_name zone_find_zones_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_inspect_zone zone_inspect", res)
@@ -393,8 +393,6 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ "enablesolib/disablesolib", "enable/disable the stop on library load events" ],
 		[ "enableaslr/disableaslr", "enable/disable process ASLR" ],
 		[ "datawin", "set start address to display on data window" ],
-		[ "rip/rax/rbx/etc", "shortcuts to modify x64 registers" ],
-		[ "eip/eax/ebx/etc", "shortcuts to modify x86 register" ],
 		[ "asm32/asm64", "x86/x64 assembler using keystone" ],
 		[ "arm32/arm64/armthumb", "ARM assembler using keystone" ],
 		[ 'tele', 'view memory page'],
@@ -2725,7 +2723,7 @@ def cmd_arm32(debugger, command, result, dict):
 Syntax: arm32
 
 Type one instruction per line. Finish with \'end\' or \'stop\'.
-Keystone set to KS_ARCH_ARM and KS_MODE_ARM.
+Keystone set to KS_ARCH_ARM and KS_MODE_LITTLE_ENDIAN.
 	
 Requires Keystone and Python bindings from www.keystone-engine.org.
 """
@@ -2745,7 +2743,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 			break
 		inst_list.append(line)
 	
-	assemble_keystone(KS_ARCH_ARM, KS_MODE_ARM, inst_list)
+	assemble_keystone(KS_ARCH_ARM, KS_MODE_LITTLE_ENDIAN, inst_list)
 
 def cmd_armthumb(debugger, command, result, dict):
 	'''32 bit ARM Thumb interactive Keystone based assembler. Use \'armthumb help\' for more information.'''
@@ -2785,7 +2783,7 @@ def cmd_arm64(debugger, command, result, dict):
 Syntax: arm64
 
 Type one instruction per line. Finish with \'end\' or \'stop\'.
-Keystone set to KS_ARCH_ARM64 and KS_MODE_ARM.
+Keystone set to KS_ARCH_ARM64 and KS_MODE_LITTLE_ENDIAN.
 
 Requires Keystone and Python bindings from www.keystone-engine.org.
 """
@@ -2805,7 +2803,7 @@ Requires Keystone and Python bindings from www.keystone-engine.org.
 			break
 		inst_list.append(line)
 	
-	assemble_keystone(KS_ARCH_ARM64, KS_MODE_ARM, inst_list)
+	assemble_keystone(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN, inst_list)
 
 # iphone connect to lldb server command
 def cmd_IphoneConnect(debugger, command, result, dict): 
@@ -2888,42 +2886,42 @@ def cmd_xnu_panic_log(debugger, command, result, dict):
 def cmd_xnu_list_zone(debugger, command, result, dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	print('[+] Zones:')
 	pad_size = len(str(len(XNU_ZONES)))
-	for i, zone in enumerate(XNU_ZONES):
-		zone_name = XNU_ZONES.getZoneName(zone)
-		print(f'- {i:{pad_size}} | {zone_name}')
+	for idx, zone_name in enumerate(XNU_ZONES.iter_zone_name()):
+		print(f'- {idx:{pad_size}} | {zone_name}')
 	
 def cmd_xnu_find_zones_by_name(debugger, command, result, dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 
-	args = command.split(' ')
-	if len(args) < 1:
-		print('zone_find_zones_index <zone name>')
-		return False
+	# args = command.split(' ')
+	# if len(args) < 1:
+	# 	print('zone_find_zones_index <zone name>')
+	# 	return False
 
-	zones = XNU_ZONES.findzone_by_names(args[0])
+	# zones = XNU_ZONES.findzone_by_names(args[0])
 
-	print('[+] Zones:')
-	pad_size = len(str(len(zones)))
-	for i, zone in zones:
-		print(f'- {i:{pad_size}} | {XNU_ZONES.getZoneName(zone)}')
+	# print('[+] Zones:')
+	# pad_size = len(str(len(zones)))
+	# for i, zone in zones:
+	# 	zone_name = zone.get_attribute('zone_name')
+	# 	print(f'- {i:{pad_size}} | {zone_name}')
 
 def cmd_xnu_zshow_logged_zone(debugger, command, result, dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	XNU_ZONES.show_zone_being_logged()
 
 def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 
 	args = command.split(' ')
 	if len(args) < 2:
@@ -2932,45 +2930,30 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	
 	zone_name = args[0]
 	elem_ptr = evaluate(args[1])
-	zone_idx = XNU_ZONES.getLoggedZoneIdxByName(zone_name)
-	if zone_idx < 0:
-		print(f'[!] Invalid zone name : "{zone_name}"')
-		return False
-	
-	if not XNU_ZONES.is_zonelogging(zone_idx):
-		print(f'[!] Zone name "{zone_name}" is not logging')
-		return False
-	
-	if not elem_ptr:
-		print('[!] Invalid elem_ptr')
-		return False
-	
-	XNU_ZONES.zone_find_stack_elem(zone_idx, elem_ptr)
-
+	XNU_ZONES.zone_find_stack_elem(zone_name, elem_ptr)
 	return True
 
 def cmd_xnu_inspect_zone(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	if not len(command):
 		print('zone_inspect: <zone_name>')
 		return False
 	
 	zone_name = command
-	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
-	if zone_idx < 0:
+	if not XNU_ZONES.has_zone_name(zone_name):
 		print(f'[!] Invalid zone name : "{zone_name}"')
 		return False
 
-	XNU_ZONES.InspectZone(zone_idx)
+	XNU_ZONES.inspect_zone_name(zone_name)
 	return True
 
 def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
@@ -2980,9 +2963,9 @@ def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 	zone_name = args[0]
 	chunk_addr = evaluate(args[1])
 
-	zone_idx = XNU_ZONES.getZoneIdxbyName(zone_name)
-	status = XNU_ZONES.GetChunkInfoAtZone(zone_idx, chunk_addr)
+	status = XNU_ZONES.get_chunk_info_at_zone_name(zone_name, chunk_addr)
 	if status != 'None':
+		zone_idx = XNU_ZONES.get_zone_id_by_name(zone_name)
 		color = COLORS["GREEN"]
 		if status == 'Freed':
 			color = COLORS["RED"]
@@ -2997,7 +2980,7 @@ def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
@@ -3009,17 +2992,18 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 
 	if zone_name_regex == 'kalloc':
 		zone_name_regex = '.*kalloc.*' # quickway to find kalloc zone
-
-	zone_idxs = XNU_ZONES.getZonebyRegex(zone_name_regex)
-	if not zone_idxs:
-		print('[+] Your chunk address is not found in any zones.')
-		return True
 	
-	for zone_idx in zone_idxs:
-		zone_name = XNU_ZONES.getZoneName(XNU_ZONES[zone_idx])
-		print(f'[+] Searching on zone: {zone_name}')
+	zones = XNU_ZONES.get_zones_by_regex(zone_name_regex)
+	if not zones:
+		print('[!] Unable to find any zone')
+		return False
 
-		status = XNU_ZONES.GetChunkInfoAtZone(zone_idx, chunk_addr)
+	for zone in zones:
+		zone_name = zone.get_attribute('zone_name')
+		zone_idx = zone.get_attribute('zone_idx')
+		print(f'[+] zone[{zone_name}] information:')
+
+		status = XNU_ZONES.get_chunk_info_at_zone(zone)
 		if status != 'None':
 			color = COLORS["GREEN"]
 			if status == 'Freed':
@@ -3034,43 +3018,30 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 def cmd_xnu_zone_backtrace_at(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
-	action = 1 # get backtrace history of free chunk pointer
 	if len(args) < 2:
 		print('Usage: zone_backtrace_at <zone_name> <chunk_ptr> <action>')
 		print('action: 1 for kfree backtrace only ')
 		print('        2 for kmalloc backtrace only ')
 		return False
 
+	zone_name = args[0]
+	chunk_ptr = evaluate(args[1])
+
 	try:
-		zone_name = args[0]
-		chunk_ptr = evaluate(args[1])
 		action = int(args[2])
 	except IndexError:
-		pass
+		action = 1 # get backtrace history of free chunk pointer
 	
-	zone_idx = XNU_ZONES.getLoggedZoneIdxByName(zone_name)
-	if zone_idx < 0:
-		print(f'[!] Invalid zone name : "{zone_name}"')
-		return False
-	
-	if not XNU_ZONES.is_zonelogging(zone_idx):
-		print(f'[!] Zone name "{zone_name}" is not logging')
-		return False
-	
-	if not chunk_ptr:
-		print('[!] Invalid chunk ptr')
-		return False
-	
-	XNU_ZONES.zone_find_stack_elem(zone_idx, chunk_ptr, action)
+	XNU_ZONES.zone_find_stack_elem(zone_name, chunk_ptr, action)
 	return True
 	
 def cmd_xnu_find_chunk(debugger, command, result, _dict):
 	global XNU_ZONES
 	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 	
 	if not len(command):
 		print('zone_find_chunk: <chunk_addr>')
@@ -3078,7 +3049,7 @@ def cmd_xnu_find_chunk(debugger, command, result, _dict):
 	
 	chunk_addr = evaluate(command)
 	
-	info = XNU_ZONES.FindChunkInfo(chunk_addr)
+	info = XNU_ZONES.find_chunk_info(chunk_addr)
 	if info != None:
 		zone_name = info['zone_name']
 		zone_idx = info['zone_idx']
@@ -3092,7 +3063,7 @@ def cmd_xnu_find_chunk(debugger, command, result, _dict):
 def cmd_xnu_zone_reload(debugger, command, result, _dict):
 	global XNU_ZONES
 	print('[+] Reload XNU_ZONES')
-	XNU_ZONES = XNUZones(lldb.debugger.GetSelectedTarget())
+	XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
 
 # XNU MACH IPC PORT COMMANDS
 
@@ -3156,7 +3127,7 @@ def cmd_addkext(debugger, command, result, dict):
 		print('[!] "target modules add" error :', res.GetError())
 
 	# find base address of kext module
-	load_kext_base_addr = xnu_get_kext_base_address(kext_binary_path.name)
+	load_kext_base_addr = xnu_get_kext_base_address(kext_binary_path.stem)
 	if load_kext_base_addr == -1:
 		print(f'[!] Unable to find base address of kext binary {kext_binary_path}')
 		return 1
