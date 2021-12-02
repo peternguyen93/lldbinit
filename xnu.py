@@ -948,6 +948,9 @@ class XNUZones:
 		else:
 			ZoneMeta = ZoneMetaNew
 	
+	def is_zone_logging(self, zone : ESBValue) -> bool:
+		return zone.zlog_btlog.GetIntValue() != 0
+	
 	def _extract_zone_name(self, zone : ESBValue) -> str:
 		z_name = zone.z_name.GetStrValue()
 			
@@ -1004,9 +1007,6 @@ class XNUZones:
 					zones.append(self.zones_access_cache[zone_name])
 
 		return zones
-
-	def is_zone_logging(self, zone : ESBValue) -> bool:
-		return zone.zlog_btlog.GetIntValue() != 0
 	
 	def show_zone_being_logged(self):
 		if not self.logged_zones:
@@ -1206,7 +1206,7 @@ class XNUZones:
 		if not self.has_zone_name(zone_name):
 			return 'None'
 		
-		zone = self.zones_access_cache(zone_name)
+		zone = self.zones_access_cache[zone_name]
 		return self.get_chunk_info_at_zone(zone, chunk_addr)
 	
 	def get_info_chunks_at_range(self, from_zone_idx, to_zone_idx, chunk_addr):

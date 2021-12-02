@@ -3001,15 +3001,15 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 	for zone in zones:
 		zone_name = zone.get_attribute('zone_name')
 		zone_idx = zone.get_attribute('zone_idx')
-		print(f'[+] zone[{zone_name}] information:')
+		print(f'[+] zone_array[{zone_idx}]({zone_name}) : ', end='')
 
-		status = XNU_ZONES.get_chunk_info_at_zone(zone)
+		status = XNU_ZONES.get_chunk_info_at_zone(zone, chunk_addr)
 		if status != 'None':
 			color = COLORS["GREEN"]
 			if status == 'Freed':
 				color = COLORS["RED"]
 
-			print(f'[+] zone_array[{zone_idx}]({zone_name}) - {COLORS["BOLD"]}0x{chunk_addr:X}{COLORS["RESET"]}{color}({status})')
+			print(f'{COLORS["BOLD"]}0x{chunk_addr:X}{COLORS["RESET"]}{color}({status})')
 			print(COLORS["RESET"], end='')
 			break
 	
