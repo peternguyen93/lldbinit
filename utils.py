@@ -190,7 +190,7 @@ def get_instance_object():
 		instanceObject = '(id)$x0'
 	# not supported yet
 	elif is_arm():
-		instanceObject = None
+		instanceObject = '(id)$r0'
 	return instanceObject
 
 # -------------------------

@@ -2272,7 +2272,6 @@ def cmd_DumpInstructions(debugger, command, result, dict):
 
 # return the instruction mnemonic at input address
 def get_mnemonic(target_addr):
-	err = lldb.SBError()
 	target = get_target()
 
 	instruction_list = target.ReadInstructions(lldb.SBAddress(target_addr, target), 1, 'intel')
@@ -2288,7 +2287,6 @@ def get_mnemonic(target_addr):
 
 # returns the instruction operands
 def get_operands(source_address):
-	err = lldb.SBError()
 	target = get_target()
 	# use current memory address
 	# needs to be this way to workaround SBAddress init bug
@@ -3426,6 +3424,11 @@ def get_indirect_flow_target(source_address):
 	err = lldb.SBError()
 	operand = get_operands(source_address)
 	operand = operand.lower()
+	mnemonic = get_mnemonic(source_address)
+
+	if mnemonic == 'tbz':
+		return 0
+
 	#output("Operand: {}\n".format(operand))
 	# calls into a deferenced memory address
 	if "qword" in operand:
@@ -3496,11 +3499,9 @@ def get_ret_address():
 	return ret_addr
 
 def is_sending_objc_msg():
-	err = lldb.SBError()
-
 	call_addr = get_indirect_flow_target(get_current_pc())
 	symbol_name = resolve_symbol_name(call_addr)
-	return symbol_name == "objc_msgSend"
+	return symbol_name.startswith("objc_msgSend")
 
 # XXX: x64 only
 def display_objc():
