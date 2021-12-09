@@ -3703,7 +3703,7 @@ def print_cpu_registers(register_names):
 
 
 			color(COLOR_REGNAME)
-			output("  {0:<3}: ".format(register_name.upper().ljust(3, ' ')))
+			output("  {0:<4}: ".format(register_name.upper().ljust(4, ' ')))
 
 			try:
 
