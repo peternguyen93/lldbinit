@@ -421,7 +421,7 @@ def get_vmmap_info():
 	if not process_info.IsValid():
 		return ''
 
-	cmd = ['vmmap', str(process_info.GetProcessID())]
+	cmd = ['vmmap', str(process_info.GetProcessID()), "-interleaved"]
 	proc = Popen(cmd, stdout = PIPE)
 	out, err = proc.communicate()
 
@@ -434,9 +434,10 @@ def parse_vmmap_info():
 		return
 
 	match_map = re.findall(
-		r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)',
+		r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
 		vmmap_info
 	)
+	max_name_len = max([len(line[0].strip()) for line in match_map])
 
 	if not match_map:
 		print('[-] Vmmap parse error')
@@ -444,7 +445,7 @@ def parse_vmmap_info():
 		return
 
 	for m in match_map:
-		o_map_info = MapInfo(m[0], int(m[1], 16), int(m[2], 16), m[3], m[4], m[5])
+		o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "), int(m[1], 16), int(m[2], 16), m[3], m[4], m[5].strip())
 		if o_map_info not in vmmap_caches:
 			# add to caches
 			vmmap_caches.append(o_map_info)
