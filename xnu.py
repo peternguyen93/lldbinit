@@ -901,19 +901,32 @@ ZoneMeta = None
 gkalloc_heap_names = []
 
 class XNUZones:
-	def __init__(self, target):
-		global ZoneMeta
-		global gkalloc_heap_names
+	def __init__(self):
 		# get all zones symbols
-		self.target = target
 		self.kalloc_heap_names = []
 		self.zones_access_cache = {}
 		self.zone_index_array = []
 		self.logged_zones = {}
+		self.pointer_size = 8
+		self.zone_security_array = None
+		self.zone_struct_size = 0
+		self.zone_array_address = 0
+		self.target = None
+	
+	def is_loaded(self) -> bool:
+		if not len(self.kalloc_heap_names):
+			return False
+		return True
+
+	def load_from_kernel(self, target):
+		global ZoneMeta
+		global gkalloc_heap_names
+
 		self.pointer_size = get_pointer_size()
 		self.zone_security_array = ESBValue('zone_security_array')
 		self.zone_struct_size = size_of('zone')
-		self.zone_array_address = 0
+
+		self.target = target
 
 		zone_array = ESBValue('zone_array')
 		if not xnu_esbvalue_check(zone_array):
@@ -1273,7 +1286,7 @@ class XNUZones:
 			print(COLORS['RESET'], end='')
 			num+=1
 	
-	def get_allocation_elems(self, zone_name : str) -> list:
+	def get_allocated_elems(self, zone_name : str) -> list:
 		elems = []
 
 		zone = self.get_zone_by_name(zone_name)

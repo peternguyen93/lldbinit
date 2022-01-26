@@ -160,7 +160,7 @@ aarch64_registers = [
 	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
 ]
 
-XNU_ZONES = None
+XNU_ZONES = XNUZones()
 SelectedVM = ''
 
 def __lldb_init_module(debugger, internal_dict):
@@ -2883,8 +2883,8 @@ def cmd_xnu_panic_log(debugger, command, result, dict):
 
 def cmd_xnu_list_zone(debugger, command, result, dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	print('[+] Zones:')
 	pad_size = len(str(len(XNU_ZONES)))
@@ -2893,8 +2893,8 @@ def cmd_xnu_list_zone(debugger, command, result, dict):
 	
 def cmd_xnu_find_zones_by_name(debugger, command, result, dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
 	# args = command.split(' ')
 	# if len(args) < 1:
@@ -2911,15 +2911,15 @@ def cmd_xnu_find_zones_by_name(debugger, command, result, dict):
 
 def cmd_xnu_zshow_logged_zone(debugger, command, result, dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	XNU_ZONES.show_zone_being_logged()
 
 def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
 	args = command.split(' ')
 	if len(args) < 2:
@@ -2933,8 +2933,8 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 
 def cmd_xnu_inspect_zone(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	if not len(command):
 		print('zone_inspect: <zone_name>')
@@ -2950,8 +2950,8 @@ def cmd_xnu_inspect_zone(debugger, command, result, _dict):
 
 def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
@@ -2977,8 +2977,8 @@ def cmd_xnu_show_chunk_at(debugger, command, result, _dict):
 
 def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
@@ -3015,8 +3015,8 @@ def cmd_xnu_show_chunk_with_regex(debugger, command, result, _dict):
 
 def cmd_xnu_zone_backtrace_at(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
 	if len(args) < 2:
@@ -3038,8 +3038,8 @@ def cmd_xnu_zone_backtrace_at(debugger, command, result, _dict):
 	
 def cmd_xnu_find_chunk(debugger, command, result, _dict):
 	global XNU_ZONES
-	if not XNU_ZONES:
-		XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	if not XNU_ZONES.is_loaded():
+		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	if not len(command):
 		print('zone_find_chunk: <chunk_addr>')
@@ -3060,8 +3060,11 @@ def cmd_xnu_find_chunk(debugger, command, result, _dict):
 
 def cmd_xnu_zone_reload(debugger, command, result, _dict):
 	global XNU_ZONES
+	if XNU_ZONES.is_loaded():
+		return
+	
 	print('[+] Reload XNU_ZONES')
-	XNU_ZONES = XNUZones(debugger.GetSelectedTarget())
+	XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
 # XNU MACH IPC PORT COMMANDS
 
