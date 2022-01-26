@@ -1272,3 +1272,29 @@ class XNUZones:
 			print("{:5d}  0x{:<20X} {:<10s}".format(num, elem, status))
 			print(COLORS['RESET'], end='')
 			num+=1
+	
+	def get_allocation_elems(self, zone_name : str) -> list:
+		elems = []
+
+		zone = self.get_zone_by_name(zone_name)
+		if zone == None:
+			return elems
+		
+		for status, elem in self.iter_chunks_at_zone(zone):
+			if status == 'Allocated':
+				elems.append(elem)
+		
+		return elem
+	
+	def get_freed_elems(self, zone_name : str) -> list:
+		elems = []
+
+		zone = self.get_zone_by_name(zone_name)
+		if zone == None:
+			return elems
+		
+		for status, elem in self.iter_chunks_at_zone(zone):
+			if status == 'Freed':
+				elems.append(elem)
+		
+		return elem
