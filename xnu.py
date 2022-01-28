@@ -876,7 +876,8 @@ class ZoneMetaNew(object):
 		eidx  = (addr - start) // esize
 		if meta.zm_inline_bitmap.GetIntValue():
 			idx = (eidx // 32)
-			bits = ESBValue.initWithAddressType(meta.GetIntValue() + idx, 'struct zone_page_metadata *').zm_bitmap.GetIntValue()
+			meta = ESBValue.initWithAddressType(meta.GetIntValue() + idx, 'struct zone_page_metadata *')
+			bits = meta.zm_bitmap.GetIntValue()
 			return bits & (1 << (eidx % 32)) != 0
 		else:
 			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
@@ -1039,7 +1040,7 @@ class XNUZones:
 		except KeyError:
 			return -1
 	
-	def zone_find_stack_elem(self, zone_name : str, target_element : int, action=0):
+	def zone_find_stack_elem(self, zone_name : str, target_element : int, action : int):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
 			refer to the given zone element.
 			Usage: zstack_findelem <btlog addr> <elem addr>
@@ -1087,7 +1088,8 @@ class XNUZones:
 			Loop through element_hash_queue linked list to find record information of our target_element
 		'''
 		while hashelem.GetIntValue() != 0:
-			if hashelem.elem.GetIntValue() == target_element:
+			hashelem_value = hashelem.elem.GetIntValue()
+			if hashelem_value == target_element:
 				# found record information of target_element
 
 				recindex = hashelem.recindex.GetIntValue()
@@ -1097,7 +1099,7 @@ class XNUZones:
 				# extract action for this chunk address and see if this chunk was freed or allocated
 				record_operation = record.operation.GetIntValue()
 
-				if not action:
+				if action == 0:
 					out_str = ('-' * 8)
 					if record_operation == 1:
 						out_str += "OP: ALLOC. "

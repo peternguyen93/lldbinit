@@ -2928,7 +2928,7 @@ def cmd_xnu_zone_triage(debugger, command, result, _dict):
 	
 	zone_name = args[0]
 	elem_ptr = evaluate(args[1])
-	XNU_ZONES.zone_find_stack_elem(zone_name, elem_ptr)
+	XNU_ZONES.zone_find_stack_elem(zone_name, elem_ptr, 0)
 	return True
 
 def cmd_xnu_inspect_zone(debugger, command, result, _dict):
