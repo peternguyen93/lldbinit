@@ -1313,3 +1313,101 @@ class XNUZones:
 				elems.append(elem)
 		
 		return elem
+
+# --- IOKit stuffs --- #
+IOKIT_OBJECTS = (
+	'OSArray', 'OSDictionary', 'OSData', 'OSString', 'OSSymbol',
+	'OSBoolean', 'OSOrderedSet', 'OSNumber', 'OSSet'
+)
+
+def iokit_get_type(object_address) -> str:
+	vtable = read_u64(object_address)
+	if not vtable:
+		return ''
+
+	sym_name = resolve_symbol_name(vtable)
+	m = re.match(r'vtable for (\w*)', sym_name)
+	if not m:
+		return ''
+	
+	if m[1] not in IOKIT_OBJECTS:
+		return ''
+
+	return m[1]
+
+def iokit_display(object_address : int, level = 0):
+	iokit_type = iokit_get_type(object_address)
+	if not iokit_type:
+		print(f'[!] Unable to detect iokit object at address {hex(object_address)}')
+		return
+
+	# cast this address to sepecific IOKit class
+	iokit_object = ESBValue.initWithAddressType(object_address, iokit_type + ' *')
+
+	if level == 0:
+		print(f'({iokit_type} *){hex(object_address)} : ', end='')
+
+	if iokit_type == 'OSDictionary':
+		# loop through this OSDictionary
+		print(' '*level + '{')
+		dict_count = iokit_object.count.GetIntValue()
+		dict_ptr = iokit_object.dictionary.GetIntValue()
+
+		for i in range(dict_count):
+			key_ptr = read_u64(dict_ptr)
+			value_ptr = read_u64(dict_ptr + 8)
+
+			print(' '*(level + 1), end='')
+			iokit_display(key_ptr, level=level+1)
+			print(' : ', end='')
+			iokit_display(value_ptr, level=level+1)
+			print('')
+
+			dict_ptr += 0x10
+		
+		print(' '*level + '}', end='')
+
+	elif iokit_type == 'OSArray':
+		print(' '*level + '[')
+		array_count = iokit_object.count.GetIntValue()
+		array_ptr   = iokit_object.array.GetIntValue()
+
+		for i in range(array_count):
+			value_addr = read_u64(array_ptr)
+			print(' '*(level + 1))
+			iokit_display(value_addr, level=level+1)
+			print(',')
+			array_ptr += 8
+
+	elif iokit_type == 'OSSet':
+		# unimplemented
+		print(f'OSSet({hex(object_address)})', end='')
+	
+	elif iokit_type == 'OSOrderedSet':
+		# unimplemented
+		print(f'OSOrderedSet({hex(object_address)})', end='')
+
+	elif iokit_type == 'OSString' or iokit_type == 'OSSymbol':
+		string_value = iokit_object.string.GetStrValue()
+		if iokit_type == 'OSSymbol':
+			print(string_value, end='')
+		else:
+			print(f'"{string_value}"', end='')
+	
+	elif iokit_type == 'OSNumber':
+		number_value = iokit_object.value.GetIntValue()
+		print(number_value, end='')
+	
+	elif iokit_type == 'OSData':
+		# unimplemented
+		print(f'OSData({hex(object_address)})', end='')
+	
+	elif iokit_type == 'OSBoolean':
+		boolean_value = iokit_object.value.GetBoolValue()
+		if boolean_value:
+			print('true', end='')
+		else:
+			print('false', end='')
+	
+	if level == 0:
+		print("") # add newline

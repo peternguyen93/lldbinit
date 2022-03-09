@@ -500,6 +500,34 @@ def read_mem(addr, size):
 
 	return mem_data
 
+def read_u8(addr):
+	arr = read_mem(addr, 1)
+	if not arr:
+		return 0
+	
+	return unpack('<B', arr)[0]
+
+def read_u16(addr):
+	arr = read_mem(addr, 2)
+	if not arr:
+		return 0
+	
+	return unpack('<H', arr)[0]
+
+def read_u32(addr):
+	arr = read_mem(addr, 4)
+	if not arr:
+		return 0
+	
+	return unpack('<I', arr)[0]
+
+def read_u64(addr):
+	arr = read_mem(addr, 8)
+	if not arr:
+		return 0
+	
+	return unpack('<Q', arr)[0]
+
 def read_str(addr, size):
 	err = lldb.SBError()
 	process = get_process()

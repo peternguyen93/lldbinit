@@ -93,7 +93,7 @@ try:
 except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 
-VERSION = "2.2"
+VERSION = "2.3"
 
 #
 # User configurable options
@@ -332,6 +332,10 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ipc_task_port showtaskipc", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
 
+	# xnu iokit commands
+	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_display iokit_display", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_type iokit_type", res)
+
 	# xnu load kext
 	ci.HandleCommand("command script add -f lldbinit.cmd_addkext addkext", res)
 
@@ -423,6 +427,8 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
 		[ 'zone_reload', 'reload zone if network connection is failed'],
 		[ 'showports', 'Show all ports of given process name'],
+		[ 'iokit_display', 'Display readable iokit object of given address'],
+		[ 'iokit_type', 'Get type of iokit object of given address'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -3255,6 +3261,38 @@ def cmd_xnu_reset_kdp_pmap(debugger, command, result, dict):
 		return
 
 	print('[+] Reset kdp_pmap ok.')
+
+## ----- IOKit commands ----- ##
+def cmd_iokit_display(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 1:
+		print('iokit_display <address>')
+		return
+	
+	address = evaluate(args[0])
+	if not address:
+		print(f'[!] Unable to detect iokit object at {address}')
+		return
+	
+	iokit_display(address)
+	return
+
+def cmd_iokit_type(debugger, command, result, dict):
+	args = command.split(' ')
+	if len(args) < 1:
+		print('iokit_display <address>')
+		return
+	
+	address = evaluate(args[0])
+	if not address:
+		print(f'[!] Unable to detect iokit object at {address}')
+		return
+	
+	iokit_object_type = iokit_get_type(address)
+	if not iokit_object_type:
+		print(f'[!] Unable to detect iokit object at {hex(address)}')
+	else:
+		print(f'[+] iokit object at {hex(address)} is {iokit_object_type}')
 
 ## VMware / VirtualBox commands
 
