@@ -22,7 +22,7 @@ Some of the commands that were passed to lldb command line were converted to int
 
 - Ported to Python 3.x
 - Added `xinfo`, `tele` , `mbp`, `vmmap`, `xnu_` commands supporting to debug XNU kernel, objective C.
-- Added `iokit_display` to display readable OSObject
+- Added `iokit_print` to display readable OSObject
 - Bug fixed for lldb with Python3 on newest macOS.
 - Support aarch64.
 - Improve better color to determinte region of an address

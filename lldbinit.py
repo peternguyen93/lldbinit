@@ -333,7 +333,7 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
 
 	# xnu iokit commands
-	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_display iokit_display", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_print iokit_print", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_type iokit_type", res)
 
 	# xnu load kext
@@ -427,7 +427,7 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 		[ 'zone_backtrace_at', 'list callstack of chunk if btlog is enabled'],
 		[ 'zone_reload', 'reload zone if network connection is failed'],
 		[ 'showports', 'Show all ports of given process name'],
-		[ 'iokit_display', 'Display readable iokit object of given address'],
+		[ 'iokit_print', 'Display readable iokit object of given address'],
 		[ 'iokit_type', 'Get type of iokit object of given address'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
@@ -3263,10 +3263,10 @@ def cmd_xnu_reset_kdp_pmap(debugger, command, result, dict):
 	print('[+] Reset kdp_pmap ok.')
 
 ## ----- IOKit commands ----- ##
-def cmd_iokit_display(debugger, command, result, dict):
+def cmd_iokit_print(debugger, command, result, dict):
 	args = command.split(' ')
 	if len(args) < 1:
-		print('iokit_display <address>')
+		print('cmd_iokit_print <address>')
 		return
 	
 	address = evaluate(args[0])
@@ -3274,13 +3274,13 @@ def cmd_iokit_display(debugger, command, result, dict):
 		print(f'[!] Unable to detect iokit object at {address}')
 		return
 	
-	iokit_display(address)
+	iokit_print(address)
 	return
 
 def cmd_iokit_type(debugger, command, result, dict):
 	args = command.split(' ')
 	if len(args) < 1:
-		print('iokit_display <address>')
+		print('iokit_type <address>')
 		return
 	
 	address = evaluate(args[0])

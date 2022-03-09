@@ -1335,7 +1335,7 @@ def iokit_get_type(object_address) -> str:
 
 	return m[1]
 
-def iokit_display(object_address : int, level = 0):
+def iokit_print(object_address : int, level = 0):
 	iokit_type = iokit_get_type(object_address)
 	if not iokit_type:
 		print(f'[!] Unable to detect iokit object at address {hex(object_address)}')
@@ -1358,9 +1358,9 @@ def iokit_display(object_address : int, level = 0):
 			value_ptr = read_u64(dict_ptr + 8)
 
 			print(' '*(level + 1), end='')
-			iokit_display(key_ptr, level=level+1)
+			iokit_print(key_ptr, level=level+1)
 			print(' : ', end='')
-			iokit_display(value_ptr, level=level+1)
+			iokit_print(value_ptr, level=level+1)
 			print('')
 
 			dict_ptr += 0x10
@@ -1375,7 +1375,7 @@ def iokit_display(object_address : int, level = 0):
 		for i in range(array_count):
 			value_addr = read_u64(array_ptr)
 			print(' '*(level + 1))
-			iokit_display(value_addr, level=level+1)
+			iokit_print(value_addr, level=level+1)
 			print(',')
 			array_ptr += 8
 
