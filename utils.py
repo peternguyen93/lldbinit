@@ -94,21 +94,26 @@ def get_process():
 
 def get_frame():
 	frame = None
+	process = get_process()
 	# SBProcess supports thread iteration -> SBThread
-	for thread in get_process():
-		if (thread.GetStopReason() != lldb.eStopReasonNone) and (thread.GetStopReason() != lldb.eStopReasonInvalid):
+	for thread in process:
+		# if (thread.GetStopReason() != lldb.eStopReasonNone) and (thread.GetStopReason() != lldb.eStopReasonInvalid):
+		if thread.GetStopReason() != lldb.eStopReasonInvalid:
 			frame = thread.GetFrameAtIndex(0)
 			break
 	# this will generate a false positive when we start the target the first time because there's no context yet.
 	if not frame:
 		print("[-] warning: get_frame() failed. Is the target binary started?")
+
 	return frame
 
 def get_thread():
 	thread = None
+	process = get_process()
 	# SBProcess supports thread iteration -> SBThread
-	for _thread in get_process():
-		if (_thread.GetStopReason() != lldb.eStopReasonNone) and (_thread.GetStopReason() != lldb.eStopReasonInvalid):
+	for _thread in process:
+		# if (_thread.GetStopReason() != lldb.eStopReasonNone) and (_thread.GetStopReason() != lldb.eStopReasonInvalid):
+		if _thread.GetStopReason() != lldb.eStopReasonInvalid:
 			thread = _thread
 	
 	if not thread:

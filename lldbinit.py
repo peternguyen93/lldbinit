@@ -4066,20 +4066,15 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 		if thread.IsValid() == False:
 			return
 
-	# frame = get_frame()
-	# frame = get_frame_at_selected_thread()
-	# if type(frame) == type(None): 
-	# 	return
-			
 	# thread= frame.GetThread()
 	while True:
 		frame = get_frame()
-		if type(frame) == type(None): 
+		if frame == None: 
 			return
 
 		thread = frame.GetThread()
-		if thread.GetStopReason() == lldb.eStopReasonNone or thread.GetStopReason() == lldb.eStopReasonInvalid:
-		# if thread.GetStopReason() == lldb.eStopReasonInvalid:
+		# if thread.GetStopReason() == lldb.eStopReasonNone or thread.GetStopReason() == lldb.eStopReasonInvalid:
+		if thread.GetStopReason() == lldb.eStopReasonInvalid:
 			time.sleep(0.001)
 		else:
 			break
