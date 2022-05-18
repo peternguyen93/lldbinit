@@ -4067,9 +4067,10 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 			return
 
 	# thread= frame.GetThread()
+	frame = None
 	while True:
 		frame = get_frame()
-		if frame == None: 
+		if not frame: 
 			return
 
 		thread = frame.GetThread()
@@ -4078,7 +4079,11 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
 			time.sleep(0.001)
 		else:
 			break
-		
+	
+	if frame and not frame.IsValid():
+		print('[!] The frame is not valid, Does the process start correctly?')
+		return
+
 	GlobalListOutput = []
 	
 	arch = get_arch()
