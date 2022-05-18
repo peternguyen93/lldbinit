@@ -216,7 +216,7 @@ def get_gp_register(reg_name):
 def get_gp_registers():
 	regs = get_registers("general")
 	if regs == None:
-		return 0
+		return None
 	
 	registers = {}
 	for reg in regs:
