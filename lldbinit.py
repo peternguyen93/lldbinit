@@ -779,8 +779,8 @@ Syntax: bpda
 	cmd = command.split()
 	if len(cmd) != 0:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		print("[-] error: command doesn't take any arguments.")
 		print("")
 		print(help)
@@ -811,8 +811,8 @@ Syntax: bpea
 	cmd = command.split()
 	if len(cmd) != 0:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		print("[-] error: command doesn't take any arguments.")
 		print("")
 		print(help)
@@ -839,8 +839,8 @@ Note: control flow is not respected, it breakpoints next instruction in memory.
 	cmd = command.split()
 	if len(cmd) != 0:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		print("[-] error: command doesn't take any arguments.")
 		print("")
 		print(help)
@@ -870,8 +870,8 @@ Note: control flow is not respected, it advances to next instruction in memory.
 	cmd = command.split()
 	if len(cmd) != 0:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		print("[-] error: command doesn't take any arguments.")
 		print("")
 		print(help)
@@ -914,8 +914,8 @@ Note: expressions supported, do not use spaces between operators.
 			return
 	elif len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		
 		int3_addr = evaluate(cmd[0])
 		if not int3_addr:
@@ -972,8 +972,8 @@ Note: expressions supported, do not use spaces between operators.
 			return
 	elif len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		int3_addr = evaluate(cmd[0])
 		if not int3_addr:
 			print("[-] error: invalid input address value.")
@@ -1027,8 +1027,8 @@ Syntax: listint3
 	cmd = command.split()
 	if len(cmd) != 0:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		print("[-] error: command doesn't take any arguments.")
 		print("")
 		print(help)
@@ -1063,8 +1063,8 @@ Note: expressions supported, do not use spaces between operators.
 	cmd = command.split()
 	if len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		
 		nop_addr = evaluate(cmd[0])
 		patch_size = 1
@@ -1123,8 +1123,8 @@ Note: expressions supported, do not use spaces between operators.
 	cmd = command.split()
 	if len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return        
+			print(help)
+			return        
 		null_addr = evaluate(cmd[0])
 		patch_size = 1
 		if null_addr == None:
@@ -2551,8 +2551,8 @@ Note: expressions supported, do not use spaces between operators.
 	cmd = command.split()
 	if len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		header_addr = evaluate(cmd[0])
 		if not header_addr:
 			print("[-] error: invalid header address value.")
@@ -2602,8 +2602,8 @@ Note: expressions supported, do not use spaces between operators.
 	cmd = command.split()
 	if len(cmd) == 1:
 		if cmd[0] == "help":
-		   print(help)
-		   return
+			print(help)
+			return
 		header_addr = evaluate(cmd[0])
 		if not header_addr:
 			print("[-] error: invalid header address value.")
