@@ -139,6 +139,19 @@ def try_convert_str_to_int(num_str):
 			return 0
 
 # evaluate an expression and return the value it represents
+def get_c_array_addr(value):
+	var_type_name = value.GetTypeName()
+	if not var_type_name:
+		return 0
+	
+	if 'char [' in var_type_name or 'unsigned char [' in var_type_name:
+		return value.GetLoadAddress()
+	
+	if 'int [' in var_type_name or 'unsigned int [' in var_type_name:
+		return value.GetLoadAddress()
+
+	return 0
+
 def evaluate(command):
 	frame = get_frame()
 	if frame:
@@ -147,6 +160,10 @@ def evaluate(command):
 			return 0
 		
 		if value.GetValue() == None:
+			addr = get_c_array_addr(value)
+			if addr:
+				return addr
+
 			return try_convert_str_to_int(command)
 		
 		return try_convert_str_to_int(value.GetValue())
@@ -160,6 +177,10 @@ def evaluate(command):
 			return 0
 		
 		if value.GetValue() == None:
+			addr = get_c_array_addr(value)
+			if addr:
+				return addr
+
 			return try_convert_str_to_int(command)
 		
 		return try_convert_str_to_int(value.GetValue())
