@@ -3122,7 +3122,7 @@ def cmd_xnu_show_ports(debugger, command, result, _dict):
 # -------------------------------------------------------
 
 def cmd_addkext(debugger, command, result, dict):
-	kext_binary_path = Path(command)
+	kext_binary_path = Path(command).expanduser().absolute()
 
 	if not kext_binary_path.exists():
 		print('[!] Kext binary is not exists')

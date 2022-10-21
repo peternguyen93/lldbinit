@@ -55,7 +55,8 @@ def xnu_get_all_kexts() -> dict:
 	for i in range(g_load_kext_summaries.numSummaries.GetIntValue()):
 		kext_summary_at = ESBValue.initWithAddressType(kext_summaries_ptr, 'OSKextLoadedKextSummary *')
 		
-		kext_name = kext_summary_at.name.GetStrValue()
+		# fix remove null padding character while dumping kext_name
+		kext_name = kext_summary_at.name.GetStrValue().strip('\\0')
 		kext_address = kext_summary_at.address.GetIntValue()
 		kext_size = kext_summary_at.size.GetValue()
 		kext_uuid_addr = kext_summary_at.uuid.GetLoadAddress()
