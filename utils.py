@@ -522,7 +522,7 @@ def read_mem(addr, size):
 	process = get_process()
 
 	mem_data = process.ReadMemory(addr, size, err)
-	if not err.Success():
+	if mem_data == None:
 		mem_data = b''
 
 	return mem_data

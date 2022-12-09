@@ -1344,7 +1344,7 @@ Note: expressions supported, do not use spaces between operators.
 			return
 
 	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
-	if not membuff:
+	if not len(membuff):
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
 	membuff = membuff.ljust(0x100, b'\x00')
@@ -1436,7 +1436,7 @@ Note: expressions supported, do not use spaces between operators.
 			return
 
 	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
-	if not membuff:
+	if not len(membuff): # confuse with membuff contains all NULL byte and length of membuff
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
 	membuff = membuff.ljust(0x100, b'\x00')
@@ -1514,7 +1514,7 @@ Note: expressions supported, do not use spaces between operators.
 			return
 
 	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
-	if not membuff:
+	if not len(membuff):
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
 	membuff = membuff.ljust(0x100, b'\x00')
@@ -1588,7 +1588,7 @@ Note: expressions supported, do not use spaces between operators.
 			return
 
 	membuff = read_mem(dump_addr, 0x100) # avoid overhead when trying to read unreadable address
-	if not membuff:
+	if not len(membuff):
 		print('[-] error: Your {0} address is not readable'.format(hex(dump_addr)))
 		return
 
