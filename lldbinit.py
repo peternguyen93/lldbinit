@@ -39,23 +39,6 @@ or
 
 just copy it somewhere and use "command script import path_to_script" when you want to load it.
 
-TODO:
------
-- better ARM support and testing - this version is focused on x86/x64
-- shortcut to dump memory to file
-- check sbthread class: stepoveruntil for example
-- help for aliases
-- error checking on many return values for lldb objects (target, frame, thread, etc) - verify if frame value is valid on the beginning of each command?
-- add source window?
-- add threads window?
-- remove that ugly stop information (deroko's trick doesn't seem to work anymore, lldb forces that over our captured input?)
-
-- command to search for symbol and display image address (image lookup -s symbol -v) (address is the range)
-- command to update breakpoints with new ASLR
-- fix get_indirect_flow_target (we can get real load address of the modules - check the new disassembler code)
-- solve addresses like lea    rsi, [rip + 0x38cf] (lldb does solve some stuff that it has symbols for and adds the info as comment)
-- some sort of colors theme support?
-
 BUGS:
 -----
 
@@ -69,19 +52,14 @@ from __future__ import print_function
 if __name__ == "__main__":
 	print("Run only as script from LLDB... Not as standalone program!")
 
-try:
-	import  lldb
-except:
-	pass
-import  sys
-import  re
-import  os
-import  time
-import  struct
-import  argparse
-import  subprocess
-import  tempfile
-from struct import *
+import sys
+import re
+import os
+import time
+import struct
+import argparse
+import subprocess
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
@@ -93,7 +71,7 @@ try:
 except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 
-VERSION = "2.3"
+VERSION = "2.4"
 
 #
 # User configurable options
@@ -163,14 +141,15 @@ aarch64_registers = [
 XNU_ZONES = XNUZones()
 SelectedVM = ''
 
-def __lldb_init_module(debugger, internal_dict):
+def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
 	lldb console. With GetCommandinterpreter().HandleCommand() we can consume all output
 	with SBCommandReturnObject and parse data before we send it to output (eg. modify it);
 	'''
 
 	# don't load if we are in Xcode since it is not compatible and will block Xcode
-	if os.getenv('PATH').startswith('/Applications/Xcode'):
+	path_env = os.getenv('PATH')
+	if path_env and path_env.startswith('/Applications/Xcode'):
 		return
 
 	'''
@@ -178,14 +157,15 @@ def __lldb_init_module(debugger, internal_dict):
 	.lldbinit 2 times, thus this dirty hack is here to prevent doulbe loading...
 	if somebody knows better way, would be great to know :)
 	''' 
-	var = debugger.GetInternalVariableValue("stop-disassembly-count", debugger.GetInstanceName())
+	var: lldb.SBStringList = debugger.GetInternalVariableValue(\
+								"stop-disassembly-count", debugger.GetInstanceName())
 	if var.IsValid():
 		var = var.GetStringAtIndex(0)
 		if var == "0":
 			return
 	
 	res = lldb.SBCommandReturnObject()
-	ci = debugger.GetCommandInterpreter()
+	ci: SBCommandInterpreter = debugger.GetCommandInterpreter()
 
 	# settings
 	ci.HandleCommand("settings set target.x86-disassembly-flavor intel", res)
@@ -293,7 +273,6 @@ def __lldb_init_module(debugger, internal_dict):
 	ci.HandleCommand("command alias break_entrypoint process launch --stop-at-entry", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_show_loadcmds show_loadcmds", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_show_header show_header", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_tester tester", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_datawin datawin", res)
 	
 	if CONFIG_KEYSTONE_AVAILABLE == 1:
@@ -353,10 +332,10 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand("banner")
 	return
 
-def cmd_banner(debugger,command,result,dict):    
+def cmd_banner(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):    
 	print(COLORS["RED"] + "[+] Loaded lldbinit version: " + VERSION + COLORS["RESET"])
 
-def cmd_lldbinitcmds(debugger, command, result, dict):
+def cmd_lldbinitcmds(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Display all available lldbinit commands.'''
 
 	help_table = [
@@ -445,24 +424,11 @@ def cmd_lldbinitcmds(debugger, command, result, dict):
 
 	print("\nUse \'cmdname help\' for extended command help.")
 
-# placeholder to make tests
-def cmd_tester(debugger, command, result, dict):
-	print("test")
-	#frame = get_frame()
-	# the SBValue to ReturnFromFrame must be eValueTypeRegister type
-	# if we do a lldb.SBValue() we can't set to that type
-	# so we need to make a copy
-	# can we use FindRegister() from frame?
-	#return_value = frame.reg["rax"]
-	#return_value.value = "1"
-	#thread.ReturnFromFrame(frame, return_value)
-
-
 # -------------------------
 # Settings related commands
 # -------------------------
 
-def cmd_enable(debugger, command, result, dict):
+def cmd_enable(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Enable certain lldb and lldbinit options. Use \'enable help\' for more information.'''
 	help = """
 Enable certain lldb and lldbinit configuration options.
@@ -516,7 +482,7 @@ Available settings:
 
 	return
 
-def cmd_disable(debugger, command, result, dict):
+def cmd_disable(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Disable certain lldb and lldbinit options. Use \'disable help\' for more information.'''
 	help = """
 Disable certain lldb and lldbinit configuration options.
@@ -570,8 +536,10 @@ Available settings:
 
 	return
 
-def cmd_contextcodesize(debugger, command, result, dict): 
-	'''Set the number of disassembly lines in code window. Use \'contextcodesize help\' for more information.'''
+def cmd_contextcodesize(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict): 
+	'''Set the number of disassembly lines in code window.
+		Use \'contextcodesize help\' for more information.'''
+	
 	help = """
 Configures the number of disassembly lines displayed in code window.
 
@@ -608,7 +576,7 @@ Note: expressions supported, do not use spaces between operators.
 # Color and output related commands
 # ---------------------------------
 
-def color(x):
+def color(x: str):
 	out_col = ""
 	if CONFIG_ENABLE_COLOR == 0:
 		output(out_col)
@@ -616,7 +584,7 @@ def color(x):
 	output(COLORS[x])
 
 # append data to the output that we display at the end of the hook-stop
-def output(x):
+def output(x: str):
 	global GlobalListOutput
 	GlobalListOutput.append(x)
 
@@ -625,7 +593,7 @@ def output(x):
 # ---------------------------
 
 # create breakpoint base on module name and offset
-def cmd_m_bp(debugger, command, result, _dict):
+def cmd_m_bp(debugger: SBDebugger, command: str, result: SBCommandReturnObject, _dict: Dict):
 	args = command.split(' ')
 	if len(args) < 2:
 		print('mbp <module_name> <ida default mapped address>')
@@ -634,7 +602,7 @@ def cmd_m_bp(debugger, command, result, _dict):
 	module_name = args[0]
 	ida_mapped_addr = evaluate(args[1])
 
-	cur_target = debugger.GetSelectedTarget()
+	cur_target: SBTarget = debugger.GetSelectedTarget()
 	target_module = find_module_by_name(cur_target, module_name)
 	if not target_module:
 		result.PutCString('Module {0} is not found'.format(module_name))
@@ -1919,22 +1887,22 @@ def cmd_telescope(debugger, command, result, dict):
 			else:
 				print(hex(ptr_value))
 
-def display_map_info(map_info):
+def display_map_info(map_info: MapInfo):
 	perm = map_info.perm.split('/')
 	if 'x' in perm[0]:
 		print(COLORS['RED'], end='')
 	elif 'rw' in perm[0]:
 		print(COLORS['MAGENTA'], end='')
-	elif map_info.type.startswith('Stack'):
+	elif map_info.map_type.startswith('Stack'):
 		print(COLORS['YELLOW'], end='')
-	elif map_info.type.startswith('MALLOC'):
+	elif map_info.map_type.startswith('MALLOC'):
 		print(COLORS['CYAN'], end='')
-	elif map_info.type.startswith('__TEXT'):
+	elif map_info.map_type.startswith('__TEXT'):
 		print(COLORS['RED'], end='')
-	elif map_info.type.startswith('__DATA'):
+	elif map_info.map_type.startswith('__DATA'):
 		print(COLORS['MAGENTA'], end='')
 	
-	print(map_info.type + ' [', end='')
+	print(map_info.map_type + ' [', end='')
 
 	if get_pointer_size() == 4:
 		print("0x%.08X - 0x%.08X" % (map_info.start, map_info.end), end='')

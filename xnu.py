@@ -204,7 +204,7 @@ def xnu_showbootargs() -> str:
 
 	boot_args = pe_state.bootArgs.CastTo('boot_args *')
 	commandline = boot_args.CommandLine
-	return read_str(commandline.GetLoadAddress(), 1024).decode('utf-8')
+	return read_cstr(commandline.GetLoadAddress(), 1024).decode('utf-8')
 
 def xnu_panic_log() -> str:
 	panic_info = ESBValue('panic_info')
