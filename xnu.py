@@ -30,7 +30,7 @@ AURR_PANIC_VERSION = 1
 
 ## main functions ##
 
-def xnu_esbvalue_check(esbvar : ESBValue) -> bool:
+def xnu_esbvalue_check(esbvar: ESBValue) -> bool:
 	esb_var_name = esbvar.GetName()
 	if not esbvar.IsValid():
 		print(f'[!] Unable to find "{esb_var_name}", please boot xnu with development kernel Or \
@@ -60,7 +60,7 @@ def xnu_get_all_kexts() -> dict:
 		kext_address = kext_summary_at.address.GetIntValue()
 		kext_size = kext_summary_at.size.GetValue()
 		kext_uuid_addr = kext_summary_at.uuid.GetLoadAddress()
-		kext_uuid = GetUUIDSummary(read_mem(kext_uuid_addr, size_of('uuid_t')))
+		kext_uuid = get_uuid_summary(read_mem(kext_uuid_addr, size_of('uuid_t')))
 
 		# kext_name format : com.apple.<type of kext>.<kext bin name>
 		kext_file_name = kext_name.split('.')[-1]
@@ -135,7 +135,7 @@ def xnu_reset_kdp_pmap() -> bool:
 def xnu_read_user_address(target : lldb.SBTarget, task : ESBValue, address : int, size : int) -> bytes:
 	out = ''
 
-	if GetConnectionProtocol() != 'kdp':
+	if get_connection_protocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return b''
 
@@ -151,7 +151,7 @@ def xnu_read_user_address(target : lldb.SBTarget, task : ESBValue, address : int
 	return out
 
 def xnu_write_user_address(target : lldb.SBTarget, task : ESBValue, address : int, value : int) -> bool:
-	if GetConnectionProtocol() != 'kdp':
+	if get_connection_protocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return False
 
@@ -206,7 +206,7 @@ def xnu_showbootargs() -> str:
 	commandline = boot_args.CommandLine
 	return read_cstr(commandline.GetLoadAddress(), 1024).decode('utf-8')
 
-def xnu_panic_log() -> str:
+def xnu_panic_log() -> bytes:
 	panic_info = ESBValue('panic_info')
 	if not xnu_esbvalue_check(panic_info):
 		return b''
