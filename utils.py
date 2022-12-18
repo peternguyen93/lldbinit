@@ -1,8 +1,8 @@
 '''
-LLDB utils functions
-Author : peternguyen
+	lldbinit core functions
+	Author : peternguyen
 '''
-from typing import List, Dict, Union, Optional, Type, Set, Any
+from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator
 import typing
 from typing_extensions import Self
 from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, \
@@ -551,53 +551,49 @@ def read_pointer(addr: int) -> int:
 	
 	return int.from_bytes(membuf, byteorder='little')
 
-def read_u8(addr: int):
+def read_u8(addr: int) -> int:
 	arr = read_mem(addr, 1)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<B', arr)[0]
 
-def read_u16(addr: int):
+def read_u16(addr: int) -> int:
 	arr = read_mem(addr, 2)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<H', arr)[0]
 
-def read_u32(addr: int):
+def read_u32(addr: int) -> int:
 	arr = read_mem(addr, 4)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<I', arr)[0]
 
-def read_u64(addr: int):
+def read_u64(addr: int) -> int:
 	arr = read_mem(addr, 8)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<Q', arr)[0]
 
-def read_cstr(addr: int, size: int) -> bytes:
-	err = SBError()
-	process = get_process()
-	if process == None:
-		raise LLDBMemoryException('get_process() return None')
+def read_cstr(addr: int, max_size: int=1024) -> bytes:
+	c_str = bytearray()
+	i = 0
+	
+	while i < max_size:
+		try:
+			ch = read_u8(addr + i)
+			if ch == 0x00:
+				break
+			c_str.append(ch)
+			i+=1
+		except LLDBMemoryException:
+			break
 
-	c_str = b''
-	for i in range(size):
-		c = process.ReadMemory(addr + i, 1, err)
-		if not err.Success():
-			c_str = b''
-			break
-		
-		if c == b'\x00':
-			break
-		
-		c_str += c
-			
-	return c_str
+	return bytes(c_str)
 
 def write_mem(addr: int, data: bytes) -> int:
 	err = SBError()
@@ -659,7 +655,7 @@ def strip_kernelPAC(pointer: int) -> int:
 		return pointer
 	
 	T1Sz = ESBValue('gT1Sz')
-	return stripPAC(pointer, T1Sz.GetIntValue())
+	return stripPAC(pointer, T1Sz.int_value)
 
 TYPE_NAME_CACHE = {}
 ENUM_NAME_CACHE = {}
@@ -741,12 +737,9 @@ def get_enum_name(enum_name, _key, prefix = ''):
 	return name
 
 # overwrites SBValue for easier to access struct member
-
-def findGlobalVariable(name: str) -> Optional[SBValue]:
+def find_global_variable(name: str) -> Optional[SBValue]:
 	target = get_target()
-	if target == None:
-		return None
-	
+
 	sbvar_list: SBValueList = target.FindGlobalVariables(name, 1)
 	sbvar: SBValue = sbvar_list.GetValueAtIndex(0)
 	if not sbvar.IsValid():
@@ -780,7 +773,7 @@ class ESBValue(object):
 			return
 
 		# find this variable in global context
-		g_sb_value = findGlobalVariable(var_name)
+		g_sb_value = find_global_variable(var_name)
 		if not g_sb_value:
 			# find this variable in local context
 			sb_value: SBValue = get_frame().FindVariable(var_name)
@@ -799,19 +792,23 @@ class ESBValue(object):
 			self.sb_var_name = 'var_name'
 	
 	@classmethod
-	def initWithSBValue(cls: Type['ESBValue'], sb_value: SBValue):
+	def init_with_SBValue(cls: Type['ESBValue'], sb_value: SBValue):
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = sb_value
 		new_esbvalue.sb_var_name = sb_value.GetName()
 		return new_esbvalue
 	
 	@classmethod
-	def initWithAddressType(cls: Type['ESBValue'], address: int, var_type: str):
+	def init_with_address(cls: Type['ESBValue'], address: int, var_type: str):
 		target = get_target()
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 		new_esbvalue.sb_var_name = 'var_name'
 		return new_esbvalue
+	
+	@classmethod
+	def init_null(cls: Type['ESBValue'], var_type: str):
+		return cls.init_with_address(0, var_type=var_type)
 
 	# save metadata for this ESBValue
 	def set_attribute(self: Self, attr_name: str, value: Any):
@@ -823,115 +820,113 @@ class ESBValue(object):
 		except KeyError:
 			return None
 	
-	def __getattr__(self, name: str) -> Union['ESBValue', SBValue, str]:
-		if name == 'sb_value':
-			return self.sb_value
+	def get(self: Self, attr_name: str) -> 'ESBValue':
+		'''
+			Get child member of a struct.
+
+			Developer can pass 'ips_wqset.wqset_q' directly to attr_name to get wqset_q
+			rather than esb_value.get('ips_wqset').get('wqset_q')
+		'''
+
+		if '.' in attr_name:
+			attr_names = attr_name.split('')
+		else:
+			attr_names = [attr_name]
 		
-		if name == 'sb_var_name':
-			return self.sb_var_name
-		
-		sb_value = self.GetChildMemberWithName(name)
-		if sb_value == None:
-			raise ESBValueException(f'Unable to child member {name} didn\'t exists.')
-		
-		return ESBValue.initWithSBValue(sb_value)
+		sb_value = self.sb_value
+
+		# automatically get the last child in `attr_name`
+		for attr_name in attr_names:
+			sb_value: SBValue = sb_value.GetChildMemberWithName(attr_name)
+			if not sb_value.IsValid():
+				raise ESBValueException(f'member attribute {attr_name} didn\'t exists.')
+			
+		return ESBValue.init_with_SBValue(sb_value)
+
+	def addr_of(self: Self) -> int:
+		'''
+			return address of variable
+			allproc = ESBValue('allproc')
+			allproc.add_of() is equal to &allproc in C-lang
+		'''
+		return self.sb_value.GetLoadAddress()
 	
-	def IsNull(self: Self) -> bool:
-		return self.GetIntValue() == 0
+	@property
+	def is_valid(self: Self) -> bool:
+		return self.sb_value.IsValid()
+
+	@property
+	def is_null(self: Self) -> bool:
+		return self.int_value == 0
 	
-	def IsZero(self: Self) -> bool:
-		return self.IsNull()
+	@property
+	def is_not_null(self: Self) -> bool:
+		return not self.is_null
 	
-	def GetValue(self: Self) -> Optional[str]:
-		if not self.sb_value:
-			return None
-		
+	@property
+	def value_type(self: Self) -> str:
+		'''
+			return type name of sb_value
+		'''
+		return self.sb_value.GetTypeName()
+	
+	@property
+	def value(self: Self) -> str:
+		''' extract content of sb_value'''
 		return self.sb_value.GetValue()
 	
-	def GetSummary(self: Self):
-		if not self.sb_value:
-			return None
-
-		return self.sb_value.GetSummary()
-	
-	def GetIntValue(self: Self) -> int:
-		value = self.GetValue()
-		if not value:
-			return 0
-
-		type_name: str = self.GetTypeName()
+	@property
+	def int_value(self: Self) -> int:
+		''' extract content of sb_value in integer '''
+		content = self.value
+		type_name = self.value_type
 
 		if type_name.startswith('uint8_t') or type_name.startswith('int8_t') or \
 				type_name.startswith('char'):
 			# trying to cast value to int in Python
-			value = value.strip("'\\x")
-			return int(value, 16)
+			content = content.strip("'\\x")
+			return int(content, 16)
 
-		if value.startswith('0x'):
-			return int(value, 16)
+		if content.startswith('0x'):
+			return int(content, 16)
 
-		return int(value)
+		return int(content)
 	
-	def Dereference(self: Self) -> 'ESBValue':
-		return ESBValue.initWithSBValue(self.sb_value.Dereference())
+	@property
+	def str_value(self: Self, max_length: int = 1024) -> str:
+		return read_cstr(self.addr_of(), max_length).decode('utf-8')
 	
-	def GetBoolValue(self: Self) -> bool:
-		return True if self.GetValue() == 'true' else False
+	@property
+	def var_name(self: Self) -> str:
+		if self.var_name:
+			return self.var_name
+		
+		return self.sb_value.GetName()
 	
-	def GetStrValue(self: Self) -> str:
-		summary = self.GetSummary()
-		if summary and 'no value available' not in summary:
-			return summary[1:-1] # skip double quote in "data"
-		return ''
+	@property
+	def var_type_name(self: Self) -> str:
+		return self.sb_value.GetTypeName()
 	
-	def GetLoadAddress(self: Self) -> int:
-		return self.sb_value.GetLoadAddress()
+	def dereference(self: Self) -> 'ESBValue':
+		'''
+			dereference a pointer
+		'''
+		return ESBValue.init_with_SBValue(self.sb_value.Dereference())
+
+	def summary(self: Self) -> str:
+		return self.sb_value.GetSummary()
 	
-	def GetAddress(self: Self) -> int:
+	def get_SBAddress(self: Self) -> SBAddress:
 		return self.sb_value.GetAddress()
 	
-	def GetChildMemberWithName(self: Self, child_name: str) -> Optional[SBValue]:
-		return self.sb_value.GetChildMemberWithName(child_name)
+	def cast_to(self: Self, var_type: str) -> 'ESBValue':
+		return ESBValue.init_with_address(self.int_value, var_type)
 	
-	def GetChildAtIndex(self: Self, idx) -> SBValue:
-		return self.sb_value.GetChildAtIndex(idx)
-	
-	def IsValid(self: Self) -> bool:
-		if not self.sb_value:
-			return False
-		return self.sb_value.IsValid()
-	
+	def cast_ref(self: Self, var_type: str) -> 'ESBValue':
+		return ESBValue.init_with_address(self.addr_of(), var_type)
+
 	def __getitem__(self: Self, idx) -> 'ESBValue':
-		return ESBValue.initWithSBValue(self.GetChildAtIndex(idx))
-	
-	def CastTo(self: Self, var_type, use_load_addr = False) -> 'ESBValue':
-		if use_load_addr:
-			address = self.GetLoadAddress()
-		else:
-			address = self.GetIntValue()
-		
-		target = get_target()
-		new_sb = target.CreateValueFromExpression('new_var', f'({var_type}){address}')
-		self.sb_value = new_sb
-		return self
-	
-	def GetName(self: Self) -> str:
-		'''
-			return variable name in source code
-		'''
-		if self.sb_var_name:
-			return self.sb_var_name
-		
-		if self.sb_value:
-			return self.sb_value.GetName()
-		
-		return ''
-	
-	def GetTypeName(self: Self) -> str:
-		if not self.sb_value:
-			return ''
-		
-		return self.sb_value.GetTypeName()
+		return ESBValue.init_with_SBValue(self.sb_value.GetChildAtIndex(idx))
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory

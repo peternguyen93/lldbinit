@@ -2344,10 +2344,10 @@ def disassemble(start_address: int, count: int):
 	for mem_inst in instructions_file:
 		mem_inst: SBInstruction = mem_inst
 		# get the same instruction but from the file version because we need some info from it
-		file_inst = instructions_file[count]
+		file_inst: SBInstruction = instructions_file.GetInstructionAtIndex(count)
 		# try to extract the symbol name from this location if it exists
 		# needs to be referenced to file because memory it doesn't work
-		symbol_name = instructions_file[count].addr.GetSymbol().GetName()
+		symbol_name = file_inst.addr.GetSymbol().GetName()
 		# if there is no symbol just display module where current instruction is
 		# also get rid of unnamed symbols since they are useless
 		if not symbol_name or "___lldb_unnamed_symbol" in symbol_name:
@@ -2422,7 +2422,7 @@ def disassemble(start_address: int, count: int):
 		# fix dyld_shared_arm64 dispatch function to correct symbol name
 		dyld_resolve_name = ''
 		dyld_call_addr = 0
-		if is_aarch64() and instructions_file[count].GetMnemonic(target) in ('bl', 'b'):
+		if is_aarch64() and file_inst.GetMnemonic(target) in ('bl', 'b'):
 			indirect_addr = get_indirect_flow_target(memory_addr)
 			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
 			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
@@ -2604,15 +2604,18 @@ def assemble_keystone(arch, mode, code, syntax=0):
 	for inst in code:
 		try:
 			encoding, count = ks.asm(inst)
+			output = []
+			output.append(inst)
+			output.append('->')
+			
+			if encoding:
+				for i in encoding:
+					output.append("{:02x}".format(i))
+				print(" ".join(output))
+
 		except KsError as e:
 			print("[-] error: keystone failed to assemble: {:s}".format(e))
 			return
-		output = []
-		output.append(inst)
-		output.append('->')
-		for i in encoding:
-			output.append("{:02x}".format(i))
-		print(" ".join(output))
 
 def cmd_asm32(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''32 bit x86 interactive Keystone based assembler. Use \'asm32 help\' for more information.'''
@@ -2845,7 +2848,7 @@ def cmd_xnu_panic_log(debugger: SBDebugger, command: str, result: SBCommandRetur
 
 def cmd_xnu_list_zone(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	print('[+] Zones:')
@@ -2855,7 +2858,7 @@ def cmd_xnu_list_zone(debugger: SBDebugger, command: str, result: SBCommandRetur
 	
 def cmd_xnu_find_zones_by_name(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
 	# args = command.split(' ')
@@ -2873,14 +2876,14 @@ def cmd_xnu_find_zones_by_name(debugger: SBDebugger, command: str, result: SBCom
 
 def cmd_xnu_zshow_logged_zone(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	XNU_ZONES.show_zone_being_logged()
 
 def cmd_xnu_zone_triage(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
 	args = command.split(' ')
@@ -2895,7 +2898,7 @@ def cmd_xnu_zone_triage(debugger: SBDebugger, command: str, result: SBCommandRet
 
 def cmd_xnu_inspect_zone(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	if not len(command):
@@ -2912,7 +2915,7 @@ def cmd_xnu_inspect_zone(debugger: SBDebugger, command: str, result: SBCommandRe
 
 def cmd_xnu_show_chunk_at(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
@@ -2939,7 +2942,7 @@ def cmd_xnu_show_chunk_at(debugger: SBDebugger, command: str, result: SBCommandR
 
 def cmd_xnu_show_chunk_with_regex(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
@@ -2977,7 +2980,7 @@ def cmd_xnu_show_chunk_with_regex(debugger: SBDebugger, command: str, result: SB
 
 def cmd_xnu_zone_backtrace_at(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	args = command.split(' ')
@@ -3000,7 +3003,7 @@ def cmd_xnu_zone_backtrace_at(debugger: SBDebugger, command: str, result: SBComm
 	
 def cmd_xnu_find_chunk(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if not XNU_ZONES.is_loaded():
+	if not XNU_ZONES.is_loaded:
 		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 	
 	if not len(command):
@@ -3022,7 +3025,7 @@ def cmd_xnu_find_chunk(debugger: SBDebugger, command: str, result: SBCommandRetu
 
 def cmd_xnu_zone_reload(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
-	if XNU_ZONES.is_loaded():
+	if XNU_ZONES.is_loaded:
 		return
 	
 	print('[+] Reload XNU_ZONES')
@@ -3048,7 +3051,7 @@ def cmd_xnu_show_ports(debugger: SBDebugger, command: str, result: SBCommandRetu
 	try:
 		# parse address and convert to ipc_space_t
 		ipc_space_addr = int(args[0], 16)
-		ipc_space = ESBValue.initWithAddressType(ipc_space_addr, 'ipc_space *')
+		ipc_space = ESBValue.init_with_address(ipc_space_addr, 'ipc_space *')
 	except ValueError:
 		proc_name = args[0]
 	
@@ -3059,7 +3062,7 @@ def cmd_xnu_show_ports(debugger: SBDebugger, command: str, result: SBCommandRetu
 			return False
 		
 		task_val = get_ipc_task(proc_val)
-		ipc_space = task_val.itk_space
+		ipc_space = task_val.get('itk_space')
 	
 	if ipc_space == None:
 		print('[!] Unable to find itk_space for given ', end = '')
@@ -3090,14 +3093,15 @@ def cmd_addkext(debugger: SBDebugger, command: str, result: SBCommandReturnObjec
 		print('[!] "target modules add" error :', res.GetError())
 
 	# find base address of kext module
-	load_kext_base_addr = xnu_get_kext_base_address(kext_binary_path.stem)
-	if load_kext_base_addr == -1:
+	try:
+		kernel_kext_addr = KEXT_INFO_DICTIONARY[kext_binary_path.stem].address
+	except KeyError:
 		print(f'[!] Unable to find base address of kext binary {kext_binary_path}')
 		return 1
 	
-	res = lldb.SBCommandReturnObject()
+	res: SBCommandReturnObject = SBCommandReturnObject()
 	debugger.GetCommandInterpreter().HandleCommand(
-		f"target modules load --file {str(kext_binary_path)} --slide {hex(load_kext_base_addr)}", res)
+		f"target modules load --file {str(kext_binary_path)} --slide {hex(kernel_kext_addr)}", res)
 	
 	if not res.Succeeded():
 		print('[!] "target modules load" error :', res.GetError())
@@ -3118,14 +3122,16 @@ def cmd_xnu_breakpoint(debugger: SBDebugger, command: str, result: SBCommandRetu
 	kext_name = args[0]
 	offset = int(args[1], 16)
 
-	base_address = xnu_get_kext_base_address(kext_name)
-	if base_address == 0:
+	try:
+		kext_info = KEXT_INFO_DICTIONARY[kext_name]
+	except KeyError:
 		print(f'[!] Couldn\'t found base address of kext {kext_name}')
 		return
 
+	base_address = kext_info.address
 	target_address = offset + base_address
 
-	target = debugger.GetSelectedTarget()
+	target: SBTarget = debugger.GetSelectedTarget()
 	target.BreakpointCreateByAddress(target_address)
 	print('Done')
 
@@ -3138,12 +3144,13 @@ def cmd_xnu_to_offset(debugger: SBDebugger, command: str, result: SBCommandRetur
 	kext_name = args[0]
 	address = evaluate(args[1])
 
-	base_address = xnu_get_kext_base_address(kext_name)
-	if base_address == 0:
+	try:
+		kext_info = KEXT_INFO_DICTIONARY[kext_name]
+	except KeyError:
 		print(f'[!] Couldn\'t found base address of kext {kext_name}')
 		return
 
-	offset = address - base_address
+	offset = address - kext_info.address
 	print(f'Offsset from Kext {kext_name} base address : 0x{offset:X}')
 
 def cmd_xnu_list_all_process(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -3161,10 +3168,10 @@ def cmd_xnu_find_process_by_name(debugger: SBDebugger, command: str, result: SBC
 		print(f'[!] Couldn\'t found your process {proc_name}')
 		return
 
-	proc_name = xnu_proc.p_name.GetStrValue()
-	p_pid = xnu_proc.p_pid.GetValue()
+	proc_name = xnu_proc.get('p_name').str_value
+	p_pid = xnu_proc.get('p_pid').int_value
 
-	print(f'+ {p_pid} - {proc_name} - {xnu_proc.GetValue()}')
+	print(f'+ {p_pid} - {proc_name} - {xnu_proc.value}')
 
 def cmd_xnu_read_usr_addr(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
@@ -3184,7 +3191,7 @@ def cmd_xnu_read_usr_addr(debugger: SBDebugger, command: str, result: SBCommandR
 	except (TypeError, ValueError):
 		size = 0x20
 
-	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), proc.task, user_space_addr, size)
+	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), proc.get('task'), user_space_addr, size)
 	print(hexdump(user_space_addr, raw_data, " ", 16))
 
 def cmd_xnu_set_kdp_pmap(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -3202,7 +3209,7 @@ def cmd_xnu_set_kdp_pmap(debugger: SBDebugger, command: str, result: SBCommandRe
 		print(f'[!] Process {args[0]} does not found')
 		return
 	
-	if xnu_write_task_kdp_pmap(target_proc.task):
+	if xnu_write_task_kdp_pmap(target_proc.get('task')):
 		print('[+] Set kdp_pmap ok.')
 	else:
 		print('[!] Set kdp_pmap failed.')
@@ -3396,7 +3403,6 @@ def display_data():
 
 # workaround for lldb bug regarding RIP addressing outside main executable
 def get_rip_relative_addr(source_address):
-	err = SBError()
 	inst_size = get_inst_size(source_address)
 	if inst_size <= 1:
 		print("[-] error: instruction size too small.")
@@ -3404,15 +3410,18 @@ def get_rip_relative_addr(source_address):
 	# XXX: problem because it's not just 2 and 5 bytes
 	# 0x7fff53fa2180 (0x1180): 0f 85 84 01 00 00     jne    0x7fff53fa230a ; stack_not_16_byte_aligned_error
 
-	offset_bytes = get_process().ReadMemory(source_address+1, inst_size-1, err)
-	if err.Success() == False:
+	offset_bytes = read_mem(source_address+1, inst_size-1)
+	if not len(offset_bytes):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(source_address))
 		return 0
+
+	data = 0
 	if inst_size == 2:
-		data = struct.unpack("b", offset_bytes)
+		data = int.from_bytes(offset_bytes, byteorder='little')
 	elif inst_size == 5:
-		data = struct.unpack("i", offset_bytes)
-	rip_call_addr = source_address + inst_size + data[0]
+		data = int.from_bytes(offset_bytes, byteorder='little')
+		
+	rip_call_addr = source_address + inst_size + data#[0]
 	#output("source {:x} rip call offset {:x} {:x}\n".format(source_address, data[0], rip_call_addr))
 	return rip_call_addr
 
