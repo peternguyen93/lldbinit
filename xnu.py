@@ -182,7 +182,7 @@ def xnu_list_all_process():
 	while not allproc_ptr.is_null:
 		p_name = allproc_ptr.get('p_name').str_value
 		p_pid = allproc_ptr.get('p_pid').int_value
-		print(f'+ {p_pid} - {p_name} - {allproc_ptr.int_value}')
+		print(f'+ {p_pid} - {p_name} - {hex(allproc_ptr.int_value)}')
 
 		allproc_ptr = allproc_ptr.get('p_list').get('le_next')
 

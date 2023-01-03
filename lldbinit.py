@@ -1588,27 +1588,17 @@ Note: expressions supported, do not use spaces between operators.
 # XXX: help
 def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Search memory'''
-	help == """
-[options]
- -s searches for specified string
- -u searches for specified unicode string
- -b searches binary (eg. -b 4142434445 will find ABCDE anywhere in mem)
- -d searches dword  (eg. -d 0x41414141)
- -q searches qword  (eg. -d 0x4141414141414141)
- -f loads patern from file if it's tooooo big to fit into any of specified options
- -c specify if you want to find N occurances (default is all)
- """
 
 	global GlobalListOutput
-	GlobalListOutput = []
+	GlobalListOutput.clear()
 
 	arg = str(command)
 	parser = argparse.ArgumentParser(prog="lldb")
 	parser.add_argument("-s", "--string",  help="Search string")
 	parser.add_argument("-u", "--unicode", help="Search unicode string")
-	parser.add_argument("-b", "--binary",  help="Serach binary string")
-	parser.add_argument("-d", "--dword",   help="Find dword (native packing)")
-	parser.add_argument("-q", "--qword",   help="Find qword (native packing)")
+	parser.add_argument("-b", "--binary",  help="Serach binary string (eg. -b 4142434445 will find ABCDE anywhere in mem)")
+	parser.add_argument("-d", "--dword",   help="Find dword (native packing) (eg. -d 0x41414141)")
+	parser.add_argument("-q", "--qword",   help="Find qword (native packing) (eg. -d 0x4141414141414141)")
 	parser.add_argument("-f", "--file" ,   help="Load find pattern from file")
 	parser.add_argument("-c", "--count",   help="How many occurances to find, default is all")
 
@@ -2427,9 +2417,6 @@ def disassemble(start_address: int, count: int):
 			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
 			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
 		
-		# comment = ""
-		# if file_inst.comment != "":
-		# 	comment = " ; " + file_inst.comment
 		if not dyld_resolve_name:
 			comment = file_inst.GetComment(target)
 			if comment != '':
@@ -3138,7 +3125,7 @@ def cmd_xnu_breakpoint(debugger: SBDebugger, command: str, result: SBCommandRetu
 def cmd_xnu_to_offset(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
 	if len(args) < 2:
-		print('showallproc <kext_name> <address>')
+		print('ktooff <kext_name> <address>')
 		return
 
 	kext_name = args[0]
@@ -3426,7 +3413,7 @@ def get_rip_relative_addr(source_address):
 	return rip_call_addr
 
 # XXX: instead of reading memory we can dereference right away in the evaluation
-def get_indirect_flow_target(source_address):
+def get_indirect_flow_target(source_address: int) -> int:
 	err = SBError()
 	operand = get_operands(source_address)
 	operand = operand.lower()
@@ -3445,7 +3432,7 @@ def get_indirect_flow_target(source_address):
 			x = re.search(r'\[([a-z0-9]{2,3} \+ 0x[0-9a-z]+)\]', operand)
 			if x == None:
 				return 0
-			value = get_frame().EvaluateExpression("$" + x.group(1))
+			value: SBValue = get_frame().EvaluateExpression("$" + x.group(1))
 			if value.IsValid() == False:
 				return 0
 			deref_addr = int(value.GetValue(), 10)
@@ -3575,7 +3562,7 @@ def display_indirect_flow():
 		output("\n")
 
 # find out the target address of ret, and indirect call and jmp
-def get_indirect_flow_address(src_addr: int):
+def get_indirect_flow_address(src_addr: int) -> int:
 	target = get_target()
 	instruction_list: SBInstructionList = target.ReadInstructions(\
 										SBAddress(src_addr, target), 1, 'intel')
