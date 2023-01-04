@@ -1,13 +1,22 @@
 '''
-LLDB utils functions
-Author : peternguyen
+	lldbinit core functions
+	Author : peternguyen
 '''
+from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator
+import typing
+from typing_extensions import Self
+from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, \
+				SBValue, SBSymbol, SBError, SBType, SBValueList, SBInstructionList, \
+				SBInstruction, SBModule, SBModuleSpecList, SBCommandInterpreter, \
+				SBCommandReturnObject, SBSection, SBBreakpoint
 import ctypes
 import lldb
 import re
 from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
-from struct import *
+from struct import pack, unpack
+from dataclasses import dataclass
+import struct
 import platform
 import time
 
@@ -25,46 +34,51 @@ COLOR_CURRENT_PC       = "RED"
 # Don't mess after here unless you know what you are doing!
 #
 
-COLORS = {  
-			"BLACK":     "\033[30m",
-			"RED":       "\033[31m",
-			"GREEN":     "\033[32m",
-			"YELLOW":    "\033[33m",
-			"BLUE":      "\033[34m",
-			"MAGENTA":   "\033[35m",
-			"CYAN":      "\033[36m",
-			"WHITE":     "\033[37m",
-			"RESET":     "\033[0m",
-			"BOLD":      "\033[1m",
-			"UNDERLINE": "\033[4m"
-		}
+COLORS = {
+	"BLACK":     "\033[30m",
+	"RED":       "\033[31m",
+	"GREEN":     "\033[32m",
+	"YELLOW":    "\033[33m",
+	"BLUE":      "\033[34m",
+	"MAGENTA":   "\033[35m",
+	"CYAN":      "\033[36m",
+	"WHITE":     "\033[37m",
+	"RESET":     "\033[0m",
+	"BOLD":      "\033[1m",
+	"UNDERLINE": "\033[4m"
+}
 
 # ----------------------------------------------------------
 # Packing and Unpacking functions
 # ----------------------------------------------------------
 
-def p32(value):
+def p32(value: int) -> bytes:
 	return pack('<I', value)
 
-def p64(value):
+def p64(value: int) -> bytes:
 	return pack('<Q', value)
 
 # ----------------------------------------------------------
 # Color Related Functions
 # ----------------------------------------------------------
 
-def get_color_status(addr):
+def get_color_status(addr: int) -> str:
 	target = get_target()
-	process = get_process()
-	xinfo = resolve_mem_map(target, addr)
+	if target == None:
+		return ''
 
-	if xinfo['section_name'] == '__TEXT':
+	process = get_process()
+	if process == None:
+		return ''
+
+	module_map = resolve_mem_map(target, addr)
+	if module_map.section_name == '__TEXT':
 		# address is excutable page
 		return "RED"
-	elif xinfo['section_name'] == '__DATA':
+	elif module_map.section_name == '__DATA':
 		return "MAGENTA"
 
-	error = lldb.SBError()
+	error = SBError()
 	process.ReadMemory(addr, 1, error)
 	if error.Success():
 		# memory is readable
@@ -76,59 +90,78 @@ def get_color_status(addr):
 # Functions to extract internal and process lldb information
 # ----------------------------------------------------------
 
-def get_selected_frame(debugger):
+class LLDBTargetNotFound(Exception):
+	# This exception will raise error when frame is None
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
+
+class LLDBFrameNotFound(Exception):
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
+
+def get_selected_frame(debugger: SBDebugger) -> Optional[SBFrame]:
 	process = debugger.GetSelectedTarget().GetProcess()
 	thread = process.GetSelectedThread()
 	frame = thread.GetSelectedFrame()
 	return frame
 
-def get_arch():
-	return lldb.debugger.GetSelectedTarget().triple.split('-')[0]
+def get_debugger() -> SBDebugger:
+	debugger: Optional[SBDebugger] = lldb.debugger
+	assert debugger != None, 'lldb.debugger == None'
+	return debugger
 
-def get_process():
+def get_target() -> SBTarget:
+	# try to get current target
+	debugger = get_debugger()
+	target = debugger.GetSelectedTarget()
+
+	if not target:
+		raise LLDBTargetNotFound("[-] error: no target available. please add a target to lldb.")
+
+	return target
+
+def get_arch() -> str:
+	arch: str = get_target().triple
+	return arch.split('-')[0]
+
+def get_process() -> SBProcess:
 	'''
 		A read only property that returns an lldb object
 		that represents the process (lldb.SBProcess)that this target owns.
 	'''
 	return get_target().process
 
-def get_frame():
+def get_frame() -> SBFrame:
 	frame = None
-	process = get_process()
+
 	# SBProcess supports thread iteration -> SBThread
-	for thread in process:
-		# if (thread.GetStopReason() != lldb.eStopReasonNone) and (thread.GetStopReason() != lldb.eStopReasonInvalid):
+	for thread_i in get_process():
+		thread: SBThread = thread_i
 		if thread.GetStopReason() != lldb.eStopReasonInvalid:
 			frame = thread.GetFrameAtIndex(0)
 			break
+
 	# this will generate a false positive when we start the target the first time because there's no context yet.
 	if not frame:
-		print("[-] warning: get_frame() failed. Is the target binary started?")
+		raise LLDBFrameNotFound("[-] warning: get_frame() failed. Is the target binary started?")
 
 	return frame
 
-def get_thread():
+def get_thread() -> Optional[SBThread]:
 	thread = None
-	process = get_process()
+
 	# SBProcess supports thread iteration -> SBThread
-	for _thread in process:
-		# if (_thread.GetStopReason() != lldb.eStopReasonNone) and (_thread.GetStopReason() != lldb.eStopReasonInvalid):
-		if _thread.GetStopReason() != lldb.eStopReasonInvalid:
-			thread = _thread
+	for thread_i in get_process():
+		thread_i: SBThread = thread_i
+		if thread_i.GetStopReason() != lldb.eStopReasonInvalid:
+			thread = thread_i
 	
 	if not thread:
 		print("[-] warning: get_thread() failed. Is the target binary started?")
 
 	return thread
 
-def get_target():
-	target = lldb.debugger.GetSelectedTarget()
-	if not target:
-		print("[-] error: no target available. please add a target to lldb.")
-		return None
-	return target
-
-def try_convert_str_to_int(num_str):
+def try_convert_str_to_int(num_str: str) -> int:
 	try:
 		return int(num_str, base=10)
 	except ValueError:
@@ -139,7 +172,7 @@ def try_convert_str_to_int(num_str):
 			return 0
 
 # evaluate an expression and return the value it represents
-def get_c_array_addr(value):
+def get_c_array_addr(value: SBValue) -> int:
 	var_type_name = value.GetTypeName()
 	if not var_type_name:
 		return 0
@@ -152,10 +185,10 @@ def get_c_array_addr(value):
 
 	return 0
 
-def evaluate(command):
+def evaluate(command: str) -> int:
 	frame = get_frame()
 	if frame:
-		value = frame.EvaluateExpression(command)
+		value: SBValue = frame.EvaluateExpression(command)
 		if not value.IsValid():
 			return 0
 		
@@ -185,29 +218,32 @@ def evaluate(command):
 		
 		return try_convert_str_to_int(value.GetValue())
 
-def is_i386():
+def is_i386() -> bool:
 	arch = get_arch()
 	return arch[0:1] == "i"
 
-def is_x64():
+def is_x64() -> bool:
 	arch = get_arch()
 	return arch.startswith("x86_64")
 
-def is_arm():
+def is_arm() -> bool:
 	arch = get_arch()
 	return arch == "armv7"
 
-def is_aarch64():
+def is_aarch64() -> bool:
 	arch = get_arch()
 	return arch == 'aarch64' or arch.startswith('arm64')
 
-def get_pointer_size():
+def is_supported_arch() -> bool:
+	return is_i386() or is_x64() or is_arm() or is_aarch64()
+
+def get_pointer_size() -> int:
 	poisz = evaluate("sizeof(long)")
 	return poisz
 
 # from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
-def get_instance_object():
-	instanceObject = None
+def get_instance_object() -> str:
+	instanceObject = ''
 	if is_i386():
 		instanceObject = '*(id*)($esp+4)'
 	elif is_x64():
@@ -224,55 +260,56 @@ def get_instance_object():
 # -------------------------
 
 # return the int value of a general purpose register
-def get_gp_register(reg_name):
+def get_gp_register(reg_name: str) -> int:
 	regs = get_registers("general")
-	if regs == None:
-		return 0
 	for reg in regs:
+		reg: SBValue = reg
 		if reg_name == reg.GetName():
 			#return int(reg.GetValue(), 16)
 			return reg.unsigned
+
 	return 0
 
-def get_gp_registers():
+def get_gp_registers() -> Dict[str, int]:
 	regs = get_registers("general")
-	if regs == None:
-		return None
 	
 	registers = {}
 	for reg in regs:
 		reg_name = reg.GetName()
 		registers[reg_name] = reg.unsigned
+
 	return registers
 
-def get_registers_by_frame(frame, kind):
-	if not frame:
-		return None
-	registerSets = frame.GetRegisters() # Return type of SBValueList.
+def get_registers_by_frame(frame: SBFrame, kind: str) -> SBValue:
+	registerSets: SBValueList = frame.GetRegisters()
+	
 	for registerSet in registerSets:
-		if kind.lower() in registerSet.GetName().lower():
+		registerSet: SBValue = registerSet
+		registerName: str = registerSet.GetName()
+		if kind.lower() in registerName.lower():
 			return registerSet
-	return None
+	
+	raise OSError(f'Unable to find register {kind}')
 		
-def get_registers(kind):
+def get_registers(kind) -> SBValue:
 	"""Returns the registers given the frame and the kind of registers desired.
 
 	Returns None if there's no such kind.
 	"""
-	frame = get_frame()
-	return get_registers_by_frame(frame, kind)
+	return get_registers_by_frame(get_frame(), kind)
 
 # retrieve current instruction pointer via platform independent $pc register
-def get_current_pc():
-	frame = get_frame()
-	if not frame:
+def get_current_pc() -> int:
+	try:
+		frame = get_frame()
+	except LLDBFrameNotFound:
 		return 0
 
 	return frame.pc
 
 # retrieve current stack pointer via registers information
 # XXX: add ARM
-def get_current_sp():
+def get_current_sp() -> int:
 	if is_i386():
 		sp_addr = get_gp_register("esp")
 	elif is_x64():
@@ -284,242 +321,221 @@ def get_current_sp():
 		return 0
 	return sp_addr
 
-# helper function that updates given register
-def update_register(register, command):
-	help = """
-Update given register with a new value.
-
-Syntax: register_name <value>
-
-Where value can be a single value or an expression.
-"""
-
-	cmd = command.split()
-	if len(cmd) == 0:
-		print("[-] error: command requires arguments.")
-		print("")
-		print(help)
-		return
-
-	if cmd[0] == "help":
-		print(help)
-		return
-
-	value = evaluate(command)
-	if value == None:
-		print("[-] error: invalid input value.")
-		print("")
-		print(help)
-		return
-
-	# we need to format because hex() will return string with an L and that will fail to update register
-	get_frame().reg[register].value = format(value, '#x')
-
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
 
-def objc_get_classname(objc):
+def objc_get_classname(objc: str) -> str:
 	classname_command = '(const char *)object_getClassName((id){})'.format(objc)
-	classname_value = get_frame().EvaluateExpression(classname_command)
-	if classname_value.IsValid() == False:
+	try:
+		frame = get_frame()
+	except LLDBFrameNotFound:
+		return ''
+
+	classname: SBValue = frame.EvaluateExpression(classname_command)
+	if classname.IsValid() == False:
 		return ''
 	
-	return classname_value.GetSummary().strip('"')
+	classname_str: str = classname.GetSummary()
+	return classname_str.strip('"')
 
-def find_module_by_name(target, module_name):
+def find_module_by_name(target: SBTarget, module_name: str):
 	for module in target.modules:
+		module: SBModule = module
 		if module.file.basename == module_name:
 			return module
+
 	return None
 
-def get_text_section(module):
+def get_text_section(module: SBModule) -> SBSection:
 	return module.FindSection('__TEXT')
 
-def resolve_symbol_name(address):
+def resolve_symbol_name(address: int) -> str:
+	'''
+		Return a symbold corresponding with an address
+	'''
+
 	target = get_target()
-	sb_addr = lldb.SBAddress(address, target)
-	addr_sym = sb_addr.GetSymbol()
+	
+	sb_addr = SBAddress(address, target)
+	addr_sym: SBSymbol = sb_addr.GetSymbol()
+	
 	if addr_sym.IsValid():
 		return addr_sym.GetName()
+	
 	return ''
 
-def resolve_mem_map(target, addr):
-	found = False
+@dataclass
+class ModuleInfo:
+	module_name: str = ''
+	section_name: str = ''
+	perms: int = 0
+	offset: int = -1
+	abs_offset: int = -1
 
-	xinfo = {
-		'module_name' : '',
-		'section_name' : '',
-		'perms' : 0,
-		'offset' : -1,
-		'abs_offset' : -1
-	}
+def resolve_mem_map(target: SBTarget, addr: int) -> ModuleInfo:
+	module_info = ModuleInfo()
 
 	# found in load image
 	for module in target.modules:
+		module: SBModule
 		absolute_offset = 0
 		for section in module.sections:
+			section: SBSection = section
 			if section.GetLoadAddress(target) == 0xffffffffffffffff:
 				continue
 
 			start_addr = section.GetLoadAddress(target)
 			end_addr = start_addr + section.GetFileByteSize()
 			if start_addr <= addr <= end_addr:
-				xinfo['module_name'] = module.file.basename
-				xinfo['section_name'] = section.GetName()
-				xinfo['perms'] = section.GetPermissions()
-				xinfo['offset'] = addr - start_addr
-				xinfo['abs_offset'] = absolute_offset + xinfo['offset']
-				return xinfo
+				module_info = ModuleInfo(
+					module.file.basename,
+					section.GetName(),
+					section.GetPermissions(),
+					addr - start_addr,
+					absolute_offset + (addr - start_addr)
+				)
+				return module_info
 
 			absolute_offset += section.GetFileByteSize()
 
-	return xinfo
+	return module_info
 
 ## String operations ##
 
-def parse_number(str_num):
-
+def parse_number(str_num: str) -> int:
+	num = -1
 	if not str_num:
 		return -1
 
 	try:
 		if str_num.startswith('0x'):
-			str_num = int(str_num, 16)
+			num = int(str_num, 16)
 		else:
-			str_num = int(str_num)
+			num = int(str_num)
 	except ValueError:
 		try:
-			str_num = int(str_num, 16)
+			num = int(str_num, 16)
 		except ValueError:
 			return -1
 
-	return str_num
+	return num
 
-vmmap_caches = []
-
+@dataclass
 class MapInfo(object):
-	def __init__(self, _type, start, end, perm, shm, region):
-		self.type  = _type
-		self.start = start
-		self.end   = end
-		self.perm  = perm
-		self.shm   = shm
-		self.region= region
+	map_type: str
+	start: int
+	end: int
+	perm: str
+	shm: str
+	region: str
 
-	def __hash__(self):
-		s = self.type
-		s+= str(self.start)
-		s+= str(self.end)
-		s+= self.perm
-		s+= self.shm
-		s+= self.region
-		return hash(s)
+	def __hash__(self) -> int:
+		pack_fields = f'{self.map_type}_{self.start}_{self.end}'
+		pack_fields+= f'_{self.perm}_{self.shm}_{self.region}'
+		return hash(pack_fields)
 
-	def __eq__(self, other):
-		return hash(self) == hash(other)
+class MacOSVMMapCache(object):
+	caches: Set[MapInfo]
+	is_loaded: bool
 
-	def __ne__(self, other):
-		return hash(self) != hash(other)
+	def __init__(self: Self) -> None:
+		self.caches = set()
+		self.is_loaded = False
+		if platform.system() != 'Darwin':
+			print(f'[!] Command vmmap was not supported on {platform.system()}')
+	
+	def get_vmmap_info(self: Self) -> str:
+		process = get_process()
+		if not process:
+			return ''
 
-	def __lt__(self, other):
-		return hash(self) < hash(other)
+		process_info = process.GetProcessInfo()
+		if not process_info.IsValid():
+			return ''
 
-	def __le__(self, other):
-		return hash(self) <= hash(other)
+		cmd = ['vmmap', str(process_info.GetProcessID()), "-interleaved"]
+		proc = Popen(cmd, stdout = PIPE)
+		out, _ = proc.communicate()
 
-	def __gt__(self, other):
-		return hash(self) > hash(other)
+		return out.decode('utf-8')
+	
+	def parse_vmmap_info(self: Self) -> Optional[Set[MapInfo]]:
+		vmmap_info = self.get_vmmap_info()
 
-	def __ge__(self, other):
-		return hash(self) >= hash(other)
+		if self.is_loaded:
+			# no need to reload vmmap again
+			return self.caches
 
-def get_vmmap_info():
-	if platform.system() != 'Darwin':
-		print('[!] This feature only support on macOS')
-		return ''
+		if not len(self.caches):
+			self.is_loaded = True
 
-	process = get_process()
-	if not process:
-		return ''
+		if not vmmap_info:
+			return None
 
-	process_info = process.GetProcessInfo()
-	if not process_info.IsValid():
-		return ''
+		match_map = re.findall(
+			r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
+			vmmap_info
+		)
+		max_name_len = max([len(line[0].strip()) for line in match_map])
 
-	cmd = ['vmmap', str(process_info.GetProcessID()), "-interleaved"]
-	proc = Popen(cmd, stdout = PIPE)
-	out, err = proc.communicate()
+		if not match_map:
+			return None
 
-	return out.decode('utf-8')
+		for m in match_map:
+			# add map_info to caches
+			o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "),
+								int(m[1], 16),
+								int(m[2], 16),
+								m[3],
+								m[4],
+								m[5].strip())
 
-def parse_vmmap_info():
-	vmmap_info = get_vmmap_info()
+			self.caches.add(o_map_info)
 
-	if not vmmap_info:
-		return
+		return self.caches
+	
+	def query_vmmap(self: Self, address: int) -> Optional[MapInfo]:
+		# search it in caches
+		for map_info in self.caches:
+			if map_info.start <= address < map_info.end:
+				return map_info
 
-	match_map = re.findall(
-		r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
-		vmmap_info
-	)
-	max_name_len = max([len(line[0].strip()) for line in match_map])
+		# if a new vmmap record hasn't found in caches, try to parse it from vmmap
+		process = get_process()
+		process_info = process.GetProcessInfo()
+		if not process_info.IsValid():
+			return None
 
-	if not match_map:
-		print('[-] Vmmap parse error')
-		print(vmmap_info)
-		return
+		cmd = ['vmmap', str(process_info.GetProcessID()), hex(address)]
+		proc = Popen(cmd, stdout = PIPE)
+		out, err = proc.communicate()
+		out = out.decode('utf-8')
 
-	for m in match_map:
-		o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "), int(m[1], 16), int(m[2], 16), m[3], m[4], m[5].strip())
-		if o_map_info not in vmmap_caches:
-			# add to caches
-			vmmap_caches.append(o_map_info)
+		m = re.search(
+			r'\-\-\->\s+([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)',
+			out
+		)
+		if not m:
+			return None
 
-	return vmmap_caches
+		map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
+		self.caches.add(map_info)
 
-def query_vmmap(address):
-	global vmmap_caches
-
-	if platform.system() != 'Darwin':
-		print('[!] This feature only support on macOS')
-		return None
-
-	for map_info in vmmap_caches:
-		if map_info.start <= address < map_info.end:
-			return map_info
-
-	process = get_process()
-	process_info = process.GetProcessInfo()
-	if not process_info.IsValid():
-		return None
-
-	cmd = ['vmmap', str(process_info.GetProcessID()), hex(address)]
-	proc = Popen(cmd, stdout = PIPE)
-	out, err = proc.communicate()
-	out = out.decode('utf-8')
-
-	m = re.search(
-		r'\-\-\->\s+([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)',
-		out
-	)
-	if not m:
-		return None
-
-	map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
-	if map_info not in vmmap_caches:
-		# save this query map into caches
-		vmmap_caches.append(map_info)
-
-	return map_info
+		return map_info
 
 # ----------------------------------------------------------
 # Memory Read/Write Support
 # ----------------------------------------------------------
+class LLDBMemoryException(Exception):
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
 
-def read_mem(addr, size):
-	err = lldb.SBError()
+def read_mem(addr: int, size: int) -> bytes:
+	err = SBError()
 	process = get_process()
+	if process == None:
+		raise LLDBMemoryException('get_process() return None')
 
 	mem_data = process.ReadMemory(addr, size, err)
 	if mem_data == None:
@@ -527,55 +543,63 @@ def read_mem(addr, size):
 
 	return mem_data
 
-def read_u8(addr):
+def read_pointer(addr: int) -> int:
+	pointer_size = get_pointer_size()
+	membuf = read_mem(addr, pointer_size)
+	if not membuf:
+		raise LLDBMemoryException(f'Unable to read pointer from {hex(addr)}')
+	
+	return int.from_bytes(membuf, byteorder='little')
+
+def read_u8(addr: int) -> int:
 	arr = read_mem(addr, 1)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<B', arr)[0]
 
-def read_u16(addr):
+def read_u16(addr: int) -> int:
 	arr = read_mem(addr, 2)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<H', arr)[0]
 
-def read_u32(addr):
+def read_u32(addr: int) -> int:
 	arr = read_mem(addr, 4)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<I', arr)[0]
 
-def read_u64(addr):
+def read_u64(addr: int) -> int:
 	arr = read_mem(addr, 8)
-	if not arr:
-		return 0
+	if not len(arr):
+		raise LLDBMemoryException(f'Unable to read mem at {hex(addr)}')
 	
 	return unpack('<Q', arr)[0]
 
-def read_str(addr, size):
-	err = lldb.SBError()
-	process = get_process()
-
-	c_str = b''
-	for i in range(size):
-		c = process.ReadMemory(addr + i, 1, err)
-		if not err.Success():
-			c_str = b''
+def read_cstr(addr: int, max_size: int=1024) -> bytes:
+	c_str = bytearray()
+	i = 0
+	
+	while i < max_size:
+		try:
+			ch = read_u8(addr + i)
+			if ch == 0x00:
+				break
+			c_str.append(ch)
+			i+=1
+		except LLDBMemoryException:
 			break
-		
-		if c == b'\x00':
-			break
-		
-		c_str += c
-			
-	return c_str
 
-def write_mem(addr, data):
-	err = lldb.SBError()
+	return bytes(c_str)
+
+def write_mem(addr: int, data: bytes) -> int:
+	err = SBError()
 	process = get_process()
+	if process == None:
+		raise LLDBMemoryException('get_process() return None')
 
 	sz_write = process.WriteMemory(addr, data, err)
 	if not err.Success():
@@ -583,11 +607,13 @@ def write_mem(addr, data):
 
 	return sz_write
 
-def try_read_mem(addr, size):
-	err = lldb.SBError()
+def try_read_mem(addr: int, size: int) ->  bytes:
+	err = SBError()
 	process = get_process()
-	mem_data = b''
+	if process == None:
+		raise LLDBMemoryException('get_process() return None')
 
+	mem_data = b''
 	while size != 0:
 		mem_data = process.ReadMemory(addr, size, err)
 		if err.Success():
@@ -597,9 +623,10 @@ def try_read_mem(addr, size):
 
 	return mem_data
 
-def size_of(struct_name):
+def size_of(struct_name: str) -> int:
 	res = lldb.SBCommandReturnObject()
-	lldb.debugger.GetCommandInterpreter().HandleCommand(f"p sizeof({struct_name})", res)
+	ci: SBCommandInterpreter = get_debugger().GetCommandInterpreter()
+	ci.HandleCommand(f"p sizeof({struct_name})", res)
 	if res.GetError():
 		# struct is not exists
 		return -1
@@ -613,7 +640,7 @@ def size_of(struct_name):
 SIGN_MASK = 1 << 55
 INT64_MAX = 18446744073709551616
 
-def stripPAC(pointer : int , type_size : int) -> int:
+def stripPAC(pointer: int , type_size: int) -> int:
 	ptr_mask = (1 << (64 - type_size)) - 1
 	pac_mask = ~ptr_mask
 	sign = pointer & SIGN_MASK
@@ -623,27 +650,27 @@ def stripPAC(pointer : int , type_size : int) -> int:
 	else:
 		return pointer & ptr_mask
 
-def strip_kernelPAC(pointer : int) -> int:
+def strip_kernelPAC(pointer: int) -> int:
 	if get_arch() != 'arm64e':
 		return pointer
 	
 	T1Sz = ESBValue('gT1Sz')
-	return stripPAC(pointer, T1Sz.GetIntValue())
+	return stripPAC(pointer, T1Sz.int_value)
 
-type_name_cache = {}
-emum_name_cache = {}
+TYPE_NAME_CACHE = {}
+ENUM_NAME_CACHE = {}
 
-def get_type(type_name : str) -> lldb.SBType:
+def get_type(type_name: str) -> SBType:
 	'''
 		Borrow this from XNU debug script
 	'''
-	global type_name_cache
+	global TYPE_NAME_CACHE
 
 	target_type = str(type_name).strip()
 	
-	if target_type in type_name_cache:
+	if target_type in TYPE_NAME_CACHE:
 		# use cache to speedup
-		return type_name_cache[target_type]
+		return TYPE_NAME_CACHE[target_type]
 	
 	requested_type_is_struct = False
 	m = re.match(r'\s*struct\s*(.*)$', target_type)
@@ -674,19 +701,19 @@ def get_type(type_name : str) -> lldb.SBType:
 
 	if requested_type_is_pointer:
 		tmp_type = tmp_type.GetPointerType()
-	type_name_cache[target_type] = tmp_type
+	TYPE_NAME_CACHE[target_type] = tmp_type
 
-	return type_name_cache[target_type]
+	return TYPE_NAME_CACHE[target_type]
 
 def get_enum_name(enum_name, _key, prefix = ''):
 	'''
 		Borrow this from XNU debug script
 	'''
-	global emum_name_cache
+	global ENUM_NAME_CACHE
 
 	ty = get_type(enum_name)
 	
-	if enum_name not in emum_name_cache:
+	if enum_name not in ENUM_NAME_CACHE:
 		ty_dict  = {}
 
 		for e in ty.get_enum_members_array():
@@ -695,9 +722,9 @@ def get_enum_name(enum_name, _key, prefix = ''):
 			else:
 				ty_dict[e.GetValueAsUnsigned()] = e.GetName()
 
-		emum_name_cache[enum_name] = ty_dict
+		ENUM_NAME_CACHE[enum_name] = ty_dict
 	else:
-		ty_dict = emum_name_cache[enum_name]
+		ty_dict = ENUM_NAME_CACHE[enum_name]
 
 	if ty.GetTypeFlags() & lldb.eTypeIsSigned:
 		key = ctypes.c_long(_key).value
@@ -710,19 +737,34 @@ def get_enum_name(enum_name, _key, prefix = ''):
 	return name
 
 # overwrites SBValue for easier to access struct member
-
-def findGlobalVariable(name):
+def find_global_variable(name: str) -> Optional[SBValue]:
 	target = get_target()
-	sbvar = target.FindGlobalVariables(name, 1).GetValueAtIndex(0)
+
+	sbvar_list: SBValueList = target.FindGlobalVariables(name, 1)
+	sbvar: SBValue = sbvar_list.GetValueAtIndex(0)
 	if not sbvar.IsValid():
 		return None
+		
 	return sbvar
 
+class ESBValueException(Exception):
+	# handle exception while using sb_value
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
+
 class ESBValue(object):
-	def __init__(self, var_name, var_type=''):
+	'''
+		Wrapper of lldb.SBValue make it easier to use to load debug variable from binary
+	'''
+
+	sb_var_name: str
+	sb_value: SBValue
+	# store metadata for ESBValue
+	sb_attributes: Dict[str, Any]
+
+	def __init__(self: Self, var_name: str, var_type: str = ''):
 		super().__init__()
 		self.sb_var_name = ''
-		self.sb_value = None
 		# store metadata
 		self.sb_attributes = {}
 
@@ -731,169 +773,176 @@ class ESBValue(object):
 			return
 
 		# find this variable in global context
-		self.sb_value = findGlobalVariable(var_name)
-		if not self.sb_value:
+		g_sb_value = find_global_variable(var_name)
+		if not g_sb_value:
 			# find this variable in local context
-			self.sb_value = get_frame().FindVariable(var_name)
-			if not self.sb_value.IsValid():
-				self.sb_value = None
-				self.sb_var_name = var_name
+			sb_value: SBValue = get_frame().FindVariable(var_name)
+			if not sb_value.IsValid():
+				raise ESBValueException(f'Unable to find variable {var_name} in this context.')
+			
+			self.sb_value = sb_value
+		
+		else:
+			self.sb_value = g_sb_value
 
 		if var_type and self.sb_value:
 			address = int(self.sb_value.GetValue(), 16)
-			# self.sb_value = cast_address_to(get_target(), 'new_var', address, var_type)
 			target = get_target()
 			self.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 			self.sb_var_name = 'var_name'
 	
 	@classmethod
-	def initWithSBValue(cls, sb_value):
+	def init_with_SBValue(cls: Type['ESBValue'], sb_value: SBValue):
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = sb_value
 		new_esbvalue.sb_var_name = sb_value.GetName()
 		return new_esbvalue
 	
 	@classmethod
-	def initWithAddressType(cls, address, var_type):
+	def init_with_address(cls: Type['ESBValue'], address: int, var_type: str):
 		target = get_target()
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 		new_esbvalue.sb_var_name = 'var_name'
 		return new_esbvalue
+	
+	@classmethod
+	def init_null(cls: Type['ESBValue'], var_type: str):
+		return cls.init_with_address(0, var_type=var_type)
 
 	# save metadata for this ESBValue
-	def set_attribute(self, attr_name, value):
+	def set_attribute(self: Self, attr_name: str, value: Any):
 		self.sb_attributes[attr_name] = value
 	
-	def get_attribute(self, attr_name):
+	def get_attribute(self, attr_name: str) -> Optional[Any]:
 		try:
 			return self.sb_attributes[attr_name]
 		except KeyError:
 			return None
 	
-	def __getattr__(self, name):
-		if name == 'sb_value':
-			return self.sb_value
-		
-		if name == 'sb_var_name':
-			return self.sb_var_name
+	def get(self: Self, attr_name: str) -> 'ESBValue':
+		'''
+			Get child member of a struct.
 
-		if self.sb_value == None:
-			return None
+			Developer can pass 'ips_wqset.wqset_q' directly to attr_name to get wqset_q
+			rather than esb_value.get('ips_wqset').get('wqset_q')
+		'''
+
+		if '.' in attr_name:
+			attr_names = attr_name.split('.')
+		else:
+			attr_names = [attr_name]
 		
-		return ESBValue.initWithSBValue(self.GetChildMemberWithName(name))
+		sb_value = self.sb_value
+
+		# automatically get the last child in `attr_name`
+		for attr_name in attr_names:
+			sb_value: SBValue = sb_value.GetChildMemberWithName(attr_name)
+			if not sb_value.IsValid():
+				raise ESBValueException(f'member attribute {attr_name} didn\'t exists.')
+			
+		return ESBValue.init_with_SBValue(sb_value)
 	
-	def IsNull(self) -> bool:
-		return self.GetIntValue() == 0
+	def has_member(self: Self, attr_name: str) -> bool:
+		'''
+			check attr_name exists or not
+		'''
+		try:
+			self.get(attr_name)
+			return True
+		except ESBValueException:
+			return False
+
+	def addr_of(self: Self) -> int:
+		'''
+			return address of variable
+			allproc = ESBValue('allproc')
+			allproc.add_of() is equal to &allproc in C-lang
+		'''
+		return self.sb_value.GetLoadAddress()
 	
-	def IsZero(self) -> bool:
-		return self.IsNull()
+	@property
+	def is_valid(self: Self) -> bool:
+		return self.sb_value.IsValid()
+
+	@property
+	def is_null(self: Self) -> bool:
+		return self.int_value == 0
 	
-	def GetValue(self):
-		if not self.sb_value:
-			return None
+	@property
+	def is_not_null(self: Self) -> bool:
+		return not self.is_null
+	
+	@property
+	def value_type(self: Self) -> str:
+		'''
+			return type name of sb_value
+		'''
+		return self.sb_value.GetTypeName()
+	
+	@property
+	def value(self: Self) -> str:
+		''' extract content of sb_value'''
 		return self.sb_value.GetValue()
 	
-	def GetSummary(self):
-		if not self.sb_value:
-			return None
-		return self.sb_value.GetSummary()
-	
-	def GetIntValue(self) -> int:
-		value = self.GetValue()
-		type_name = self.GetTypeName()
+	@property
+	def int_value(self: Self) -> int:
+		''' extract content of sb_value in integer '''
+		content = self.value
+		type_name = self.value_type
+
 		if type_name.startswith('uint8_t') or type_name.startswith('int8_t') or \
 				type_name.startswith('char'):
 			# trying to cast value to int in Python
-			value = value.strip("'\\x")
-			return int(value, 16)
+			content = content.strip("'\\x")
+			return int(content, 16)
 
-		if not value:
-			return 0
-		if value.startswith('0x'):
-			return int(value, 16)
-		return int(value)
+		if content.startswith('0x'):
+			return int(content, 16)
+
+		return int(content)
 	
-	def Dereference(self):
-		if not self.sb_value:
-			return None
-		return ESBValue.initWithSBValue(self.sb_value.Dereference())
+	@property
+	def str_value(self: Self, max_length: int = 1024) -> str:
+		return read_cstr(self.addr_of(), max_length).decode('utf-8')
 	
-	def GetBoolValue(self) -> bool:
-		if not self.sb_value:
-			return False
-		return True if self.GetValue() == 'true' else False
+	@property
+	def var_name(self: Self) -> str:
+		if self.var_name:
+			return self.var_name
+		
+		return self.sb_value.GetName()
 	
-	def GetStrValue(self) -> str:
-		summary = self.GetSummary()
-		if summary and 'no value available' not in summary:
-			return summary[1:-1] # skip double quote in "data"
-		return ''
+	@property
+	def var_type_name(self: Self) -> str:
+		return self.sb_value.GetTypeName()
 	
-	def GetLoadAddress(self):
-		if not self.sb_value:
-			return 0
-		return self.sb_value.GetLoadAddress()
+	def dereference(self: Self) -> 'ESBValue':
+		'''
+			dereference a pointer
+		'''
+		return ESBValue.init_with_SBValue(self.sb_value.Dereference())
+
+	def summary(self: Self) -> str:
+		return self.sb_value.GetSummary()
 	
-	def GetAddress(self):
-		if not self.sb_value:
-			return 0
+	def get_SBAddress(self: Self) -> SBAddress:
 		return self.sb_value.GetAddress()
 	
-	def GetChildMemberWithName(self, child_name):
-		if not self.sb_value:
-			return None
-		return self.sb_value.GetChildMemberWithName(child_name)
+	def cast_to(self: Self, var_type: str) -> 'ESBValue':
+		return ESBValue.init_with_address(self.int_value, var_type)
 	
-	def GetChildAtIndex(self, idx):
-		if not self.sb_value:
-			return None
-		return self.sb_value.GetChildAtIndex(idx)
-	
-	def IsValid(self) -> bool:
-		if not self.sb_value:
-			return False
-		return self.sb_value.IsValid()
-	
-	def __getitem__(self, idx):
-		if not self.sb_value:
-			return None
-		return ESBValue.initWithSBValue(self.GetChildAtIndex(idx))
-	
-	def CastTo(self, var_type, use_load_addr = False):
-		if use_load_addr:
-			address = self.GetLoadAddress()
-		else:
-			address = self.GetIntValue()
-		
-		target = get_target()
-		new_sb = target.CreateValueFromExpression('new_var', f'({var_type}){address}')
-		self.sb_value = new_sb
-		return self
-	
-	def GetName(self) -> str:
-		'''
-			return variable name in source code
-		'''
-		if self.sb_var_name:
-			return self.sb_var_name
-		
-		if self.sb_value:
-			return self.sb_value.GetName()
-		
-		return ''
-	
-	def GetTypeName(self) -> str:
-		if not self.sb_value:
-			return ''
-		
-		return self.sb_value.GetTypeName()
+	def cast_ref(self: Self, var_type: str) -> 'ESBValue':
+		return ESBValue.init_with_address(self.addr_of(), var_type)
+
+	def __getitem__(self: Self, idx) -> 'ESBValue':
+		return ESBValue.init_with_SBValue(self.sb_value.GetChildAtIndex(idx))
 
 # ----------------------------------------------------------
 # Cyclic algorithm to find offset on memory
 # ----------------------------------------------------------
 
-def de_bruijn(charset , n = 4, maxlen = 0x10000):
+def de_bruijn(charset: bytes, n: int = 4, maxlen: int = 0x10000) -> bytearray:
 		# string cyclic function
 		# this code base on https://github.com/Gallopsled/pwntools/blob/master/pwnlib/util/cyclic.py
 		# Taken from https://en.wikipedia.org/wiki/De_Bruijn_sequence but changed to a generator
@@ -931,7 +980,7 @@ def de_bruijn(charset , n = 4, maxlen = 0x10000):
 		return bytearray(sequence)
 
 # generate a cyclic string
-def cyclic(length = None, n = 4):
+def cyclic(length: int = 0, n: int = 4) -> bytearray:
 	charset = [b'ABCDEFGHIJKLMNOPQRSTUVWXYZ', b'%$-;abcdefghijklmopqrtuvwxyz', b'sn()0123456789']
 	mixed_charset = mixed = b''
 	k = 0
@@ -945,7 +994,7 @@ def cyclic(length = None, n = 4):
 	pattern = de_bruijn(mixed_charset, 3, length)
 	return pattern
 
-def cyclic_find(subseq, length = 0x10000):
+def cyclic_find(subseq: Union[int, bytes], length: int = 0x10000) -> int:
 	# finding subseq in generator then return pos of this subseq
 	# if it doens't find then return -1
 	generator = cyclic(length)
@@ -953,14 +1002,15 @@ def cyclic_find(subseq, length = 0x10000):
 	if isinstance(subseq, int): # subseq might be a number or hex value
 		try:
 			subseq = p32(subseq)
-		except error: # struct.error
+		except struct.error: # struct.error
 			try:
 				subseq = p64(subseq)
-			except error: # struct.error
+			except struct.error: # struct.error
 				return -1
 	
 	if not isinstance(subseq, bytes):
 		return -1
+	
 	# finding position of subseq
 	subseq = bytearray(subseq)
 	saved = bytearray([])
@@ -973,11 +1023,13 @@ def cyclic_find(subseq, length = 0x10000):
 			pos += 1
 		if saved == subseq: # if subseq equal saved then return pos of subseq
 			return pos
+	
 	return -1
 
-def hexdump(addr, chars, sep, width, lines=0xFFFFFFF):
+def hexdump(addr: int, chars: bytes, sep: str, width: int, lines=0xFFFFFFF) -> str:
 	l = []
 	line_count = 0
+	
 	while chars:
 		if line_count >= lines:
 			break
@@ -988,12 +1040,16 @@ def hexdump(addr, chars, sep, width, lines=0xFFFFFFF):
 			szaddr = "0x%.08X" % addr
 		else:
 			szaddr = "0x%.016lX" % addr
-		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % c for c in line ), sep, quotechars( line )))
+		
+		l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % \
+				(szaddr, sep.join( "%02X" % c for c in line ), sep, quotechars( line )))
+		
 		addr += 0x10
 		line_count = line_count + 1
+
 	return "\n".join(l)
 
-def quotechars( chars ):
+def quotechars(chars: bytes) -> str:
 	data = ""
 	for x in bytearray(chars):
 		if x >= 0x20 and x <= 126:
@@ -1002,57 +1058,110 @@ def quotechars( chars ):
 			data += "."
 	return data
 
-def GetUUIDSummary(uuid_bytes : bytes):
+def get_uuid_summary(uuid_bytes: bytes) -> str:
 
 	assert len(uuid_bytes) == 16, 'UUID bytes must be 16 in length'
 	data = list(uuid_bytes)
 	return "{a[0]:02X}{a[1]:02X}{a[2]:02X}{a[3]:02X}-{a[4]:02X}{a[5]:02X}-{a[6]:02X}{a[7]:02X}-{a[8]:02X}{a[9]:02X}-{a[10]:02X}{a[11]:02X}{a[12]:02X}{a[13]:02X}{a[14]:02X}{a[15]:02X}".format(a=data)
 
-def GetConnectionProtocol():
+def get_connection_protocol() -> str:
 	""" Returns a string representing what kind of connection is used for debugging the target.
 		params: None
 		returns:
 			str - connection type. One of ("core","kdp","gdb", "unknown")
 	"""
 	target = get_target()
-
 	retval = "unknown"
-	process_plugin_name = target.GetProcess().GetPluginName().lower()
+
+	if target == None:
+		return retval
+
+	sb_process: lldb.SBProcess = target.GetProcess()
+	process_plugin_name:str = sb_process.GetPluginName()
+	process_plugin_name = process_plugin_name.lower()
+
 	if "kdp" in process_plugin_name:
 		retval = "kdp"
+	
 	elif "gdb" in process_plugin_name:
 		retval = "gdb"
+	
 	elif "mach-o" in process_plugin_name and "core" in process_plugin_name:
 		retval = "core"
+
 	return retval
 
-def address_of(target, sb_value):
+def address_of(target: SBTarget, sb_value: SBValue) -> int:
 	try:
-		return sb_value.GetAddress().GetLoadAddress(target)
+		sb_address: SBAddress = sb_value.GetAddress()
+		if sb_address.IsValid():
+			return sb_address.GetLoadAddress(target)
+		return 0xffffffffffffffff
 	except AttributeError:
 		return 0xffffffffffffffff
 
-def cast_address_as_pointer_type(target, var_name, address, type_name):
-	pointer = target.FindFirstType(type_name).GetPointerType()
-	if pointer.IsValid():
-		my_var = target.CreateValueFromExpression(var_name, f'({pointer.name}){hex(address)}')
+def cast_address_as_pointer_type(
+		target: SBTarget,
+		var_name: str,
+		address: int,
+		type_name: str) -> Optional[SBValue]:
+
+	sb_type: SBType = target.FindFirstType(type_name)
+	pointer_type: SBType = sb_type.GetPointerType()
+	
+	if pointer_type.IsValid():
+		my_var = target.CreateValueFromExpression(var_name, f'({pointer_type.name}){hex(address)}')
 		return my_var
+
 	return None
+
+def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
+	'''
+		target: SBTarget
+		target_address : target call address bl <addr>
+		@return : a symbol if error return empty string
+
+		dyld_shared_cache of iOS alway dispatch an other module function by:
+		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
+		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
+		libdispatch:__stubs:00000001800B2E30                 BR              X16
+
+		out goal to resolve symbol for this address
+	'''
+
+	instructions: SBInstructionList = target.ReadInstructions(SBAddress(target_address, target), 3, 'intel')
+	if instructions.GetSize() == 0:
+		return 0
+	
+	instruction_0: SBInstruction = instructions.GetInstructionAtIndex(0)
+	instruction_1: SBInstruction = instructions.GetInstructionAtIndex(1)
+	instruction_2: SBInstruction = instructions.GetInstructionAtIndex(2)
+
+	if instruction_0.GetMnemonic(target) != 'adrp' or instruction_1.GetMnemonic(target) != 'add' or \
+		(instruction_2.GetMnemonic(target) != 'br' and instruction_2.GetOperands(target).startswith('x')):
+		return 0
+	
+	page_shift = int(instruction_0.GetOperands(target).split(',')[1])
+	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
+	call_offset = int(instruction_1.GetOperands(target).split(',')[2].strip(' #'), 16)
+	call_func_ptr = target_page + call_offset 
+
+	return call_func_ptr
 
 ## --------- END --------- ##
 # VMware fusion bridge to take snapshots, restore and create new snapshot in lldb
 # this feature support debug XNU kernel easier and faster in lldb
-def vmfusion_check():
+def vmfusion_check() -> bool:
 	vmrun = Path('/Applications/VMware Fusion.app/Contents/Public/vmrun')
 	return True if vmrun.exists() else False
 
-def argument_validate(arg):
+def argument_validate(arg: str) -> str:
 	if ' ' in arg:
 		return f'"{arg}"'
 
 	return arg
 
-def get_all_running_vm():
+def get_all_running_vm() -> Dict[str, str]:
 	vms = {}
 
 	proc = Popen(['vmrun', 'list'], stdout=PIPE)
@@ -1070,15 +1179,14 @@ def get_all_running_vm():
 
 	return vms
 
-def take_vm_snapshot(target_vm, snapshot_name):
+def take_vm_snapshot(target_vm: str, snapshot_name: str) -> None:
 	try:
 		check_call(['vmrun', 'snapshot', target_vm, argument_validate(snapshot_name)])
-		return None
 	except CalledProcessError as err:
-		return None
+		pass
 
-def revert_vm_snapshot(target_vm, snapshot_name):
-	error = None
+def revert_vm_snapshot(target_vm: str, snapshot_name: str) -> str:
+	error = ''
 	try:
 		# revert back to specific snapshot
 		check_call(['vmrun', 'revertToSnapshot', target_vm, argument_validate(snapshot_name)])
@@ -1086,19 +1194,19 @@ def revert_vm_snapshot(target_vm, snapshot_name):
 		# start target vm
 		check_call(['vmrun', 'start', target_vm])
 	except CalledProcessError as err:
-		error = err
+		error = str(err)
 	return error
 
-def delete_vm_snapshot(target_vm, snapshot_name):
+def delete_vm_snapshot(target_vm: str, snapshot_name: str) -> str:
 	try:
 		check_call(['vmrun', 'deleteSnapshot', target_vm, argument_validate(snapshot_name)])
-		return None
+		return ''
 	except CalledProcessError as err:
-		return err
+		return str(err)
 
-def list_vm_snapshot(target_vm):
+def list_vm_snapshot(target_vm: str) -> List[str]:
 	proc = Popen(['vmrun', 'listSnapshots', target_vm], stdout=PIPE)
-	out, err = proc.communicate()
+	out, _ = proc.communicate()
 
 	snapshots = []
 
@@ -1110,32 +1218,3 @@ def list_vm_snapshot(target_vm):
 		snapshots.append(snapshot_name)
 
 	return snapshots
-
-def dyld_arm64_resolve_dispatch(target, target_address):
-	'''
-		target: SBTarget
-		target_address : target call address bl <addr>
-		@return : a symbol if error return empty string
-
-		dyld_shared_cache of iOS alway dispatch an other module function by:
-		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
-		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
-		libdispatch:__stubs:00000001800B2E30                 BR              X16
-
-		out goal to resolve symbol for this address
-	'''
-
-	instructions = target.ReadInstructions(lldb.SBAddress(target_address, target), 3, 'intel')
-	if instructions.GetSize() == 0:
-		return 0
-	
-	if instructions[0].GetMnemonic(target) != 'adrp' or instructions[1].GetMnemonic(target) != 'add' or \
-		(instructions[2].GetMnemonic(target) != 'br' and instructions[2].GetOperands(target).startswith('x')):
-		return 0
-	
-	page_shift = int(instructions[0].GetOperands(target).split(',')[1])
-	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
-	call_offset = int(instructions[1].GetOperands(target).split(',')[2].strip(' #'), 16)
-	call_func_ptr = target_page + call_offset 
-
-	return call_func_ptr

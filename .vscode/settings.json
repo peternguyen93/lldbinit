@@ -1,0 +1,6 @@
+{
+	"cmake.configureOnOpen": false,
+	"python.analysis.extraPaths": [
+		"/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python/"
+	]
+}

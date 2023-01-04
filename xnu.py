@@ -3,7 +3,6 @@ Small script support xnu kernel debugging
 Author : peternguyen
 '''
 
-import lldb
 from utils import *
 from ctypes import *
 import re
@@ -29,102 +28,86 @@ AURR_PANIC_MAGIC = 0x41555252
 AURR_PANIC_VERSION = 1
 
 ## main functions ##
-
-def xnu_esbvalue_check(esbvar : ESBValue) -> bool:
-	esb_var_name = esbvar.GetName()
-	if not esbvar.IsValid():
-		print(f'[!] Unable to find "{esb_var_name}", please boot xnu with development kernel Or \
-load binary has debug infos')
-		return False
-	return True
+@dataclass
+class KextInfo:
+	kext_file_name: str = ''
+	name: str = ''
+	address: int = 0
+	size: int = 0
+	uuid: str = ''
 
 # save up cpu cost by create a cache for kext information
-gKextInfos = {} 
+KEXT_INFO_DICTIONARY: Dict[str, KextInfo] = {}
 
-def xnu_get_all_kexts() -> dict:
-	kexts = {}
+def xnu_get_all_kexts():
+	global KEXT_INFO_DICTIONARY
 
-	g_load_kext_summaries = ESBValue('gLoadedKextSummaries')
-	if not xnu_esbvalue_check(g_load_kext_summaries):
-		return kexts
+	try:
+		g_load_kext_summaries = ESBValue('gLoadedKextSummaries')
+	except ESBValueException:
+		print(f'[!] Unable to find symbol gLoadedKextSummaries in this kernel')
+		return
 
-	base_address = g_load_kext_summaries.GetIntValue()
-	entry_size = g_load_kext_summaries.entry_size.GetIntValue()
+	base_address = g_load_kext_summaries.int_value
+	entry_size = g_load_kext_summaries.get('entry_size').int_value
 	kext_summaries_ptr = base_address + size_of('OSKextLoadedKextSummaryHeader')
 
-	for i in range(g_load_kext_summaries.numSummaries.GetIntValue()):
-		kext_summary_at = ESBValue.initWithAddressType(kext_summaries_ptr, 'OSKextLoadedKextSummary *')
+	num_summaries = g_load_kext_summaries.get('numSummaries').int_value
+	for _ in range(num_summaries):
+		kext_summary = ESBValue.init_with_address(kext_summaries_ptr, 'OSKextLoadedKextSummary *')
 		
 		# fix remove null padding character while dumping kext_name
-		kext_name = kext_summary_at.name.GetStrValue().strip('\\0')
-		kext_address = kext_summary_at.address.GetIntValue()
-		kext_size = kext_summary_at.size.GetValue()
-		kext_uuid_addr = kext_summary_at.uuid.GetLoadAddress()
-		kext_uuid = GetUUIDSummary(read_mem(kext_uuid_addr, size_of('uuid_t')))
+		kext_name = kext_summary.get('name').str_value
+		kext_address = kext_summary.get('address').int_value
+		kext_size = kext_summary.get('size').int_value
+		kext_uuid_addr = kext_summary.get('uuid').addr_of()
+		kext_uuid = get_uuid_summary(read_mem(kext_uuid_addr, size_of('uuid_t')))
 
 		# kext_name format : com.apple.<type of kext>.<kext bin name>
 		kext_file_name = kext_name.split('.')[-1]
-		kexts[kext_file_name] = {
-			'name' : kext_name, # original kext name
-			'uuid' : kext_uuid,
-			'address' : kext_address,
-			'size' : kext_size
-		}
-		kext_summaries_ptr += entry_size
-	
-	return kexts
-
-def xnu_load_kextinfo():
-	global gKextInfos
-	if not gKextInfos:
-		gKextInfos = xnu_get_all_kexts()
-
-def xnu_get_kext_base_address(kext_name : str) -> int:
-	global gKextInfos
-	
-	xnu_load_kextinfo()
-
-	try:
-		return gKextInfos[kext_name]['address']
-	except KeyError:
-		return -1
+		KEXT_INFO_DICTIONARY[kext_file_name] = KextInfo(kext_file_name, kext_name, \
+														kext_address, kext_size, kext_uuid)
+		kext_summaries_ptr += entry_size	
 
 def xnu_showallkexts():
-	global gKextInfos
 	
-	xnu_load_kextinfo()
+	xnu_get_all_kexts()
 
-	longest_kext_name = len(max(gKextInfos, key=lambda kext_name: len(kext_name)))
+	longest_kext_name = len(max(KEXT_INFO_DICTIONARY, key=lambda kext_name: len(kext_name)))
 	
 	print('-- Loaded kexts:')
-	for kext_bin_name in gKextInfos:
-		kext_uuid    = gKextInfos[kext_bin_name]['uuid']
-		kext_address = gKextInfos[kext_bin_name]['address']
-		kext_size    = gKextInfos[kext_bin_name]['size']
-		kext_name    = gKextInfos[kext_bin_name]['name']
+	for kext_bin_name in KEXT_INFO_DICTIONARY:
+		kext_uuid    = KEXT_INFO_DICTIONARY[kext_bin_name].uuid
+		kext_address = KEXT_INFO_DICTIONARY[kext_bin_name].address
+		kext_size    = KEXT_INFO_DICTIONARY[kext_bin_name].size
+		kext_name    = KEXT_INFO_DICTIONARY[kext_bin_name].name
 		print(f'+ {kext_name:{longest_kext_name}}\t{kext_uuid}\t\t0x{kext_address:X}\t{kext_size}')
 
-def xnu_write_task_kdp_pmap(task : ESBValue) -> bool:
-	kdp_pmap = ESBValue('kdp_pmap')
-	if not xnu_esbvalue_check(kdp_pmap):
+def xnu_write_task_kdp_pmap(task: ESBValue) -> bool:
+	try:
+		kdp_pmap = ESBValue('kdp_pmap')
+	except ESBValueException:
+		print('Unable to find "kdp_pmap" symbol in this kernel')
 		return False
+	
+	task = task.cast_to('task *')
+	kdp_pmap_addr = kdp_pmap.addr_of()
+	pmap = task.get('map').get('pmap')
 
-	task = task.CastTo('task *')
-	kdp_pmap_addr = kdp_pmap.GetLoadAddress()
-	pmap = task.map.pmap
-
-	if not write_mem(kdp_pmap_addr, pack('<Q', pmap.GetIntValue())):
+	if not write_mem(kdp_pmap_addr, pack('<Q', pmap.int_value)):
 		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
 		return False
 
 	return True
 
 def xnu_reset_kdp_pmap() -> bool:
-	kdp_pmap = ESBValue('kdp_pmap')
-	if not xnu_esbvalue_check(kdp_pmap):
+	try:
+		kdp_pmap = ESBValue('kdp_pmap')
+	except ESBValueException:
+		print('Unable to find "kdp_pmap" symbol in this kernel')
 		return False
 	
-	kdp_pmap_addr = kdp_pmap.GetLoadAddress()
+	kdp_pmap_addr = kdp_pmap.addr_of()
 
 	if not write_mem(kdp_pmap_addr, pack('<Q', 0)):
 		print(f'[!] Overwrite kdp_pmap with task->map->pmap failed.')
@@ -132,109 +115,115 @@ def xnu_reset_kdp_pmap() -> bool:
 
 	return True
 
-def xnu_read_user_address(target : lldb.SBTarget, task : ESBValue, address : int, size : int) -> bytes:
+def xnu_read_user_address(task: ESBValue, address: int, size: int) -> bytes:
 	out = ''
 
-	if GetConnectionProtocol() != 'kdp':
+	if get_connection_protocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return b''
 
-	if not xnu_write_task_kdp_pmap(target, task):
+	if not xnu_write_task_kdp_pmap(task):
 		return b''
 
 	out = read_mem(address, size)
 
-	if not xnu_reset_kdp_pmap(target):
+	if not xnu_reset_kdp_pmap():
 		print(f'[!] Reset kdp_pmap failed')
 		return b''
 
 	return out
 
-def xnu_write_user_address(target : lldb.SBTarget, task : ESBValue, address : int, value : int) -> bool:
-	if GetConnectionProtocol() != 'kdp':
+def xnu_write_user_address(task: ESBValue, address: int, value: int) -> bool:
+	if get_connection_protocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return False
 
-	if xnu_write_task_kdp_pmap(target, task):
+	if xnu_write_task_kdp_pmap(task):
 		return False
 
-	if not write_mem(address, value):
+	if not write_mem(address, value.to_bytes(byteorder='little', length=4)):
 		return False
 
-	if not xnu_reset_kdp_pmap(target):
+	if not xnu_reset_kdp_pmap():
 		print(f'[!] Reset kdp_pmap failed')
 		return False
 
 	return True
 
-def xnu_find_process_by_name(search_proc_name : str) -> ESBValue:
-	allproc = ESBValue('allproc')
-	if not allproc.IsValid():
+def xnu_find_process_by_name(proc_name: str) -> Optional[ESBValue]:
+	try:
+		allproc = ESBValue('allproc')
+	except ESBValueException:
+		print('Unable to find "allproc" symbol in this kernel')
 		return None
-
-	allproc_ptr = allproc.lh_first
+	
+	allproc_ptr = allproc.get('lh_first')
 
 	match_proc = None
-	while allproc_ptr.GetIntValue():
-		if allproc_ptr.p_name.GetStrValue() == search_proc_name:
+	while not allproc_ptr.is_null:
+		p_name = allproc_ptr.get('p_name').str_value
+		if p_name == proc_name:
 			match_proc = allproc_ptr 
 			break
 
-		allproc_ptr = allproc_ptr.p_list.le_next
+		allproc_ptr = allproc_ptr.get('p_list').get('le_next')
 
-	return match_proc
+	return match_proc	
 
 def xnu_list_all_process():
-	allproc = ESBValue('allproc')
-	if not allproc.IsValid():
+	try:
+		allproc = ESBValue('allproc')
+	except ESBValueException:
+		print('Unable to find "allproc" symbol in this kernel')
 		return None
 
-	allproc_ptr = allproc.lh_first
+	pproc = allproc.get('lh_first')
+	
+	print(f'+ {"PID":<5} | {"Proc Name":<40} | {"Proc Address":<20} | {"Task Address":<20}')
+	while not pproc.is_null:
+		p_name = pproc.get('p_name').str_value
+		p_pid = pproc.get('p_pid').int_value
+		task = get_ipc_task(pproc)
+		print(f'+ {p_pid:<5} | {p_name:<40} | {pproc.int_value:#20x} | {task.int_value:#20x}')
 
-	while allproc_ptr.GetIntValue():
-		proc_name = allproc_ptr.p_name.GetStrValue()
-		p_pid = allproc_ptr.p_pid.GetIntValue()
-		print(f'+ {p_pid} - {proc_name} - {allproc_ptr.GetValue()}')
-		allproc_ptr = allproc_ptr.p_list.le_next
+		pproc = pproc.get('p_list').get('le_next')
 
 def xnu_showbootargs() -> str:
-	pe_state = ESBValue('PE_state')
-	if not xnu_esbvalue_check(pe_state):
+	try:
+		pe_state = ESBValue('PE_state')
+	except ESBValueException:
+		print('Unable to find "PE_state" symbol in this kernel')
 		return ''
 
-	boot_args = pe_state.bootArgs.CastTo('boot_args *')
-	commandline = boot_args.CommandLine
-	return read_str(commandline.GetLoadAddress(), 1024).decode('utf-8')
+	boot_args = pe_state.get('bootArgs').cast_to('boot_args *')
+	commandline = boot_args.get('CommandLine')
+	return commandline.str_value
 
-def xnu_panic_log() -> str:
-	panic_info = ESBValue('panic_info')
-	if not xnu_esbvalue_check(panic_info):
+def xnu_panic_log() -> bytes:
+	try:
+		panic_info = ESBValue('panic_info')
+		debug_buf_ptr = ESBValue('debug_buf_ptr')
+	except ESBValueException:
+		print('Unable to find "panic_info" and "debug_buf_ptr" symbol in this kernel')
 		return b''
 
-	mph_magic = panic_info.mph_magic
-	if not mph_magic.IsValid():
-		print('[!] Unable to find mph_magic in panic_info')
-		return b''
-	
-	if mph_magic.GetIntValue() != MACOS_PANIC_MAGIC:
+	mph_magic = panic_info.get('mph_magic')
+	if mph_magic.int_value != MACOS_PANIC_MAGIC:
 		print('[!] Currently support parse MACOS_PANIC')
 		return b''
 	
-	panic_buf = panic_info.GetIntValue()
+	panic_buf = panic_info.int_value
 
-	panic_log_begin_offset = panic_info.mph_panic_log_offset.GetIntValue()
-	panic_log_len = panic_info.mph_panic_log_len.GetIntValue()
-	other_log_begin_offset = panic_info.mph_other_log_offset.GetIntValue()
-	other_log_len = panic_info.mph_other_log_len.GetIntValue()
+	panic_log_begin_offset = panic_info.get('mph_panic_log_offset').int_value
+	panic_log_len = panic_info.get('panic_log_len').int_value
+	other_log_begin_offset = panic_info.get('mph_other_log_offset').int_value
+	other_log_len = panic_info.get('mph_other_log_len').int_value
 
-	debug_buf_ptr = ESBValue('debug_buf_ptr')
-
-	cur_debug_buf_ptr_offset = debug_buf_ptr.GetIntValue() - panic_buf
+	cur_debug_buf_ptr_offset = debug_buf_ptr.int_value - panic_buf
 	if other_log_begin_offset != 0 and (other_log_len == 0 or other_log_len < (cur_debug_buf_ptr_offset - other_log_begin_offset)):
 		other_log_len = cur_debug_buf_ptr_offset - other_log_begin_offset
 	
 	# skip ProcessPanicStackshot
-
 	out_str = b''
 	out_str += read_mem(panic_buf + panic_log_begin_offset, panic_log_len)
 	if other_log_begin_offset != 0:
@@ -251,44 +240,47 @@ LTABLE_ID_IDX_SHIFT = LTABLE_ID_GEN_BITS
 LTABLE_ID_IDX_BITS  = 18
 LTABLE_ID_IDX_MASK  = 0xffffc00000000000
 
-def waitq_table_idx_from_id(_id : ESBValue) -> int:
-	return int((_id.GetIntValue() & LTABLE_ID_IDX_MASK) >> LTABLE_ID_IDX_SHIFT)
+def waitq_table_idx_from_id(_id: ESBValue) -> int:
+	return int((_id.int_value & LTABLE_ID_IDX_MASK) >> LTABLE_ID_IDX_SHIFT)
 
-def waitq_table_gen_from_id(_id : ESBValue) -> int:
-	return (_id.GetIntValue() & LTABLE_ID_GEN_MASK) >> LTABLE_ID_GEN_SHIFT
+def waitq_table_gen_from_id(_id: ESBValue) -> int:
+	return (_id.int_value & LTABLE_ID_GEN_MASK) >> LTABLE_ID_GEN_SHIFT
 
-def get_waitq_set_id_string(setid : ESBValue) -> str:
+def get_waitq_set_id_string(setid: ESBValue) -> str:
 	idx = waitq_table_idx_from_id(setid)
 	gen = waitq_table_gen_from_id(setid)
 	return "{:>7d}/{:<#14x}".format(idx, gen)
 
-def get_ipc_space_table(ipc_space : ESBValue) -> tuple:
+def get_ipc_space_table(ipc_space: ESBValue) -> Tuple[ESBValue, int]:
 	""" Return the tuple of (entries, size) of the table for a space
 	"""
-	table = ipc_space.is_table.__hazard_ptr
-	if table.IsValid():
+	table = ipc_space.get('is_table.__hazard_ptr')
+	if table.is_valid:
 		# macOS 12 structure
-		if table.GetIntValue():
-			return (table, table.ie_size.GetIntValue())
+		return (table, table.get('ie_size').int_value)
+	
 	else:
 		# macOS 11 structure
-		table = ipc_space.is_table
-		if table.GetIntValue():
-			return (table, ipc_space.is_table_size.GetIntValue())
-	return (None, 0)
+		table = ipc_space.get('is_table')
+		return (table, ipc_space.get('is_table_size').int_value)
 
-def get_ipc_task(proc : ESBValue) -> ESBValue:
-	return proc.task.CastTo('task *')
+def get_ipc_task(proc: ESBValue) -> ESBValue:
+	if proc.has_member('task'):
+		return proc.get('task').cast_to('task *')
+	
+	proc_struct_size = ESBValue('proc_struct_size').int_value
+	task = ESBValue.init_with_address(proc.int_value + proc_struct_size, 'task *')
+	return task
 
-def get_proc_from_task(task : ESBValue) -> ESBValue:
-	return task.bsd_info.CastTo('proc *')
+def get_proc_from_task(task: ESBValue) -> ESBValue:
+	return task.get('bsd_info').cast_to('proc *')
 
 def get_destination_proc_from_port(port : ESBValue) -> ESBValue:
-	dest_space = port.ip_receiver
-	if not dest_space.IsValid():
-		dest_space = port.data.receiver
+	dest_space = port.get('ip_receiver')
+	if not dest_space.is_valid:
+		dest_space = port.get('data.receiver')
 
-	task = dest_space.is_task
+	task = dest_space.get('is_task')
 	proc = get_proc_from_task(task)
 	return proc
 	
@@ -316,32 +308,33 @@ def get_ipc_port_name(ie_bits : int, ipc_idx : int) -> int:
 	'''
 	return ((ie_bits & 0xFF000000) >> 24) | (ipc_idx << 8)
 
-def get_waitq_sets(wqset_q : ESBValue) -> list:
+def get_waitq_sets(wqset_q: ESBValue) -> List[str]:
 	sets = []
 
-	if wqset_q.IsValid() or wqset_q.IsNull():
+	if wqset_q.is_null:
 		return sets
 
-	ref = wqset_q.waitq_set_id
-	if ref.IsValid():
+	ref = wqset_q.get('waitq_set_id')
+	if ref.is_valid:
 		return sets
 
-	while not ref.wqr_value.IsNull():
-		if ref.wqr_value.GetIntValue() & 1:
-			sets.append(get_waitq_set_id_string(ref.wqr_value))
+	wqr_value = ref.get('wqr_value')
+	while not wqr_value.is_null:
+		if wqr_value.int_value & 1:
+			sets.append(get_waitq_set_id_string(wqr_value))
 			break
 
-		link = ref.wqr_value.CastTo('struct waitq_link *')
-		sets.append(get_waitq_set_id_string(link.wql_node))
-		ref  = link.wql_next
+		link = wqr_value.cast_to('struct waitq_link *')
+		sets.append(get_waitq_set_id_string(link.get('wql_node')))
+		ref  = link.get('wql_next')
 
 	return sets
 
-def get_iokit_object_type_str(kobject : ESBValue) -> str:
+def get_iokit_object_type_str(kobject: ESBValue) -> str:
 	# get iokit object type
-	vtable_ptr = kobject.CastTo('uintptr_t *').Dereference()
-	vtable_func_ptr = ESBValue.initWithAddressType(vtable_ptr.GetIntValue() + 2 * size_of('uintptr_t'), 'uintptr_t *')
-	first_vtable_func = vtable_func_ptr[0].GetIntValue()
+	vtable_ptr = kobject.cast_to('uintptr_t *').dereference()
+	vtable_func_ptr = ESBValue.init_with_address(vtable_ptr.int_value + 2 * size_of('uintptr_t'), 'uintptr_t *')
+	first_vtable_func = vtable_func_ptr[0].int_value
 	func_desc = resolve_symbol_name(first_vtable_func)
 	m = re.match(r'(\w*)::(\w*)', func_desc)
 	if not m:
@@ -349,20 +342,20 @@ def get_iokit_object_type_str(kobject : ESBValue) -> str:
 	
 	return m[1]
 
-def get_kobject_from_port(portval : ESBValue) -> str:
+def get_kobject_from_port(portval: ESBValue) -> str:
 	""" Get Kobject description from the port.
 		params: portval - core.value representation of 'ipc_port *' object
 		returns: str - string of kobject information
 	"""
-	io_bits = portval.ip_object.io_bits.GetIntValue()
+	io_bits = portval.get('ip_object.io_bits').int_value
 	if not io_bits & 0x800:
 		return ''
 
-	kobject_val = portval.ip_kobject
-	if not kobject_val.IsValid():
-		kobject_val = portval.kdata.kobject # use old way
+	kobject_val = portval.get('ip_kobject')
+	if not kobject_val.is_valid:
+		kobject_val = portval.get('kdata.kobject') # use old way
 
-	kobject_str = "{0: <#020x}".format(kobject_val.GetIntValue())
+	kobject_str = "{0: <#020x}".format(kobject_val.int_value)
 	objtype_index = io_bits & 0x3ff
 	try:
 		objtype_str   = get_enum_name('ipc_kotype_t', objtype_index, "IKOT_")
@@ -378,31 +371,34 @@ def get_kobject_from_port(portval : ESBValue) -> str:
 	else:
 		desc_str = "kobject({0:s})".format(objtype_str)
 		if objtype_str[:5] == 'TASK_':
-			proc_val = get_proc_from_task(kobject_val.CastTo('task *'))
-			desc_str += " " + proc_val.p_name.GetStrValue()
+			proc_val = get_proc_from_task(kobject_val.cast_to('task *'))
+			desc_str += " " + proc_val.get('p_name').str_value
 	return kobject_str + " " + desc_str
 
-def get_port_destination_summary(port : ESBValue) -> str:
+def get_port_destination_summary(port: ESBValue) -> str:
 	out_str = ''
 	destination_str = ''
 	destname_str = get_kobject_from_port(port)
 	if not destname_str or "kobject(TIMER)" in destname_str:
 		# check port is active
-		if port.ip_object.io_bits.GetIntValue() & 0x80000000:
-			destname_str = "{0: <#020x}".format(port.ip_messages.imq_receiver_name.GetIntValue())
+		if port.get('ip_object.io_bits').int_value & 0x80000000:
+			imq_receiver_name = port.get('ip_messages.imq_receiver_name')
+			destname_str = "{0: <#020x}".format(imq_receiver_name.int_value)
 			desc_proc = get_destination_proc_from_port(port)
-			if not desc_proc.IsNull():
-				destination_str = "{0:s}({1:d})".format(desc_proc.p_name.GetStrValue(), desc_proc.p_pid.GetIntValue())
+			if not desc_proc.is_null:
+				proc_name = desc_proc.get('p_name').str_value
+				proc_pid = desc_proc.get('p_pid').int_value
+				destination_str = "{0:s}({1:d})".format(proc_name, proc_pid)
 			else:
 				destination_str = 'task()'
 		else:
-			destname_str = "{0: <#020x}".format(port.GetIntValue())
+			destname_str = "{0: <#020x}".format(port.int_value)
 			destination_str = "inactive-port"
 
 	out_str += "{0: <20s} {1: <20s}".format(destname_str, destination_str)
 	return out_str
 
-def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
+def get_ipc_entry_summary(entry: ESBValue, ipc_name: int = 0, rights_filter: str = ''):
 	""" 
 		Borrow from XNU source
 		Get summary of a ipc entry.
@@ -435,27 +431,30 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 		"destname" : '', "destination" : ''
 	}
 
-	ie_object = entry.ie_object
-	ie_bits = entry.ie_bits.GetIntValue()
+	ie_object = entry.get('ie_object')
+	ie_bits = entry.get('ie_bits').int_value
 
 	if (ie_bits & 0x001f0000) == 0:
 		# entry is freed
 		return None
 
-	io_bits = ie_object.io_bits.GetIntValue()
+	io_bits = ie_object.get('io_bits').int_value
 	ipc_entry_info['urefs'] = ie_bits & 0xffff
-	ipc_entry_info['object'] = entry.ie_object.GetIntValue()
+	ipc_entry_info['object'] = ie_object.int_value
 
 	if ie_bits & 0x00100000:
 		ipc_entry_info['right'] = 'Dead'
 	elif ie_bits & 0x00080000:
 		ipc_entry_info['right'] = 'Set'
-		psetval = ie_object.CastTo('ipc_pset *')
-		try:
-			set_str = get_waitq_sets(psetval.ips_wqset.wqset_q)
-		except AttributeError:
-			set_str = get_waitq_sets(psetval.ips_messages.data.pset.setq.wqset_q)
-		ipc_entry_info['nsets'] = len(set_str)
+		psetval = ie_object.cast_to('ipc_pset *')
+
+		wqset_q = psetval.get('ips_wqset.wqset_q')
+		if not wqset_q.is_valid:
+			wqset_q = psetval.get('ips_messages.data.pset.setq.wqset_q')
+		
+		# set_str = get_waitq_sets(wqset_q)
+
+		# ipc_entry_info['nsets'] = len(set_str)
 		ipc_entry_info['nmsgs'] = 0
 	else:
 		if ie_bits & 0x00010000:
@@ -471,17 +470,17 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 		elif ie_bits & 0x00040000 :
 			# SEND_ONCE
 			ipc_entry_info['right'] = 'O'
-		portval = ie_object.CastTo('ipc_port_t')
+		portval = ie_object.cast_to('ipc_port_t')
 
-		ie_request = entry.ie_request.GetIntValue()
+		ie_request = entry.get('ie_request').int_value
 		if ie_request:
-			ip_requests_addr = portval.ip_requests.GetIntValue()
-			requestsval = ESBValue.initWithAddressType(
+			ip_requests_addr = portval.get('ip_requests').int_value
+			requestsval = ESBValue.init_with_address(
 								ip_requests_addr + ie_request * size_of('struct ipc_port_request'),
 								'struct ipc_port_request *'
 							)
-			sorightval = requestsval.notify.port
-			soright_ptr = sorightval.GetIntValue()
+			sorightval = requestsval.get('notify.port')
+			soright_ptr = sorightval.int_value
 			if soright_ptr != 0:
 				# dead-name notification requested
 				ipc_entry_info['right'] += 'd'
@@ -492,24 +491,30 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 				if soright_ptr & 0x2:
 					ipc_entry_info['right'] += 'r'
 		
+		if portval.has_member('ip_kobject_nsrequest'):
+			no_sender_request = portval.get('ip_kobject_nsrequest').int_value
+		
+		else:
+			no_sender_request = portval.get('ip_nsrequest').int_value
+
 		# No-senders notification requested
-		if portval.ip_nsrequest.GetIntValue() != 0 or portval.ip_kobject_nsrequest.GetIntValue():
+		if no_sender_request:
 			ipc_entry_info['right'] += 'n'
 		
 		# port-destroy notification requested
-		if portval.ip_pdrequest.GetIntValue() != 0:
+		if portval.get('ip_pdrequest').int_value:
 			ipc_entry_info['right'] += 'x'
 		
 		# Immovable receive rights
-		if portval.ip_immovable_receive.GetIntValue() != 0:
+		if portval.get('ip_immovable_receive').int_value:
 			ipc_entry_info['right'] += 'i'
 		
 		# Immovable send rights
-		if portval.ip_immovable_send.GetIntValue() != 0:
+		if portval.get('ip_immovable_send').int_value:
 			ipc_entry_info['right'] += 'm'
 
 		# No-grant Port
-		if portval.ip_no_grant.GetIntValue() != 0:
+		if portval.get('ip_no_grant').int_value:
 			ipc_entry_info['right'] += 'g'
 
 		# Port with SB filtering on
@@ -521,26 +526,26 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 			return None
 
 		# # now show the port destination part
-		ipc_entry_info['destname'] = get_port_destination_summary(ie_object.CastTo('ipc_port_t'))
+		ipc_entry_info['destname'] = get_port_destination_summary(ie_object.cast_to('ipc_port_t'))
 
 		# Get the number of sets to which this port belongs
-		set_str = get_waitq_sets(portval.ip_waitq)
-		ipc_entry_info['nsets'] = len(set_str)
-		ipc_entry_info['nmsgs'] = portval.ip_messages.imq_msgcount.GetIntValue()
+		# ip_waitq = portval.get('ip_waitq')
+		# set_str = get_waitq_sets(ip_waitq)
+		# ipc_entry_info['nsets'] = len(set_str)
+		ipc_entry_info['nmsgs'] = portval.get('ip_messages.imq_msgcount').int_value
 
 	if rights_filter == '' or rights_filter == ipc_entry_info['right']:
 		return ipc_entry_info
 	
-	return None
+	return ipc_entry_info
 
-def print_ipc_information(ipc_space : ESBValue):
+def print_ipc_information(ipc_space: ESBValue):
 	entry_table, num_entries = get_ipc_space_table(ipc_space)
 	if entry_table == None:
 		print('[!] Unable to retrieve entry_table')
 		return
 
-	entry_table_address = entry_table.GetIntValue()
-
+	entry_table_address = entry_table.int_value
 	print("{0: <20s} {1: <20s} {2: <20s} {3: <8s} {4: <10s} {5: <18s} {6: >8s} {7: <8s}".format(
 		'ipc_space', 'is_task', 'is_table', 'flags', 'ports', 'table_next', 'low_mod', 'high_mod'
 	))
@@ -550,32 +555,32 @@ def print_ipc_information(ipc_space : ESBValue):
 		flags += 'A'
 	else:
 		flags += ' '
-	if ipc_space.is_grower.GetIntValue():
+	if ipc_space.get('is_grower').int_value:
 		flags += 'G'
 
 	print("{0: <#020x} {1: <#020x} {2: <#020x} {3: <8s} {4: <10d} {5: <#18x} {6: >8d} {7: <8d}".format(
-			ipc_space.GetIntValue(),
-			ipc_space.is_task.GetIntValue(),
-			entry_table.GetIntValue(),
+			ipc_space.int_value,
+			ipc_space.get('is_task').int_value,
+			entry_table.int_value,
 			flags,
 			num_entries,
-			ipc_space.is_table_next.GetIntValue(),
-			ipc_space.is_low_mod.GetIntValue(),
-			ipc_space.is_high_mod.GetIntValue())
+			ipc_space.get('is_table_next').int_value,
+			ipc_space.get('is_low_mod').int_value,
+			ipc_space.get('is_high_mod').int_value)
 		)
 
 	print("{: <20s} {: <12s} {: <8s} {: <8s} {: <8s} {: <8s} {: <20s} {: <20s}".format(
 		"object", "name", "rights", "urefs", "nsets", "nmsgs", "destname", "destination"))
 	
 	for idx in range(1, num_entries):
-		ipc_entry = ESBValue.initWithAddressType(entry_table_address + idx * size_of('struct ipc_entry'), 'ipc_entry_t')
+		ipc_entry = ESBValue.init_with_address(entry_table_address + idx * size_of('struct ipc_entry'), 'ipc_entry_t')
 		ipc_entry_info = get_ipc_entry_summary(ipc_entry)
 		if ipc_entry_info == None:
 			continue
 		
 		print("{: <#020x} {: <12s} {: <8s} {: <8d} {: <8d} {: <8d} {: <20s} {: <20s}".format(
 			ipc_entry_info['object'],
-			str(hex(get_ipc_port_name(ipc_entry.ie_bits.GetIntValue(), idx))),
+			str(hex(get_ipc_port_name(ipc_entry.get('ie_bits').int_value, idx))),
 			ipc_entry_info['right'],
 			ipc_entry_info['urefs'],
 			ipc_entry_info['nsets'],
@@ -591,27 +596,35 @@ class ZoneMetaOld(object):
 	"""
 		Helper class that helpers walking metadata
 	"""
+	pagesize: int
+	zone_map_min: int
+	zone_map_max: int
+	zone_meta_min: int
+	zone_meta_max: int
+	zone_array: 'XNUZones'
+	zp_nopoison_cookie: int
+	meta: ESBValue
 
-	def _looksForeign(self, addr):
+	def _looksForeign(self: Self, addr: int) -> bool:
 		if addr & (self.pagesize - 1):
 			return False
 
-		meta = ESBValue.initWithAddressType(addr, "struct zone_page_metadata *")
-		if not meta.IsValid():
+		meta = ESBValue.init_with_address(addr, "struct zone_page_metadata *")
+		if meta.is_null:
 			return False
 
-		return meta.zm_foreign_cookie[0] == 0x123456789abcdef
+		return meta.get('zm_foreign_cookie')[0] == 0x123456789abcdef
 
-	def __init__(self, zone_array, addr, isPageIndex = False):
+	def __init__(self: Self, zone_array: 'XNUZones', addr: int, isPageIndex: bool = False):
 		zone_info = ESBValue('zone_info')
 
-		self.pagesize = ESBValue('page_size').GetIntValue()
-		self.zone_map_min   = zone_info.zi_map_range.min_address.GetIntValue()
-		self.zone_map_max   = zone_info.zi_map_range.max_address.GetIntValue()
-		self.zone_meta_min  = zone_info.zi_meta_range.min_address.GetIntValue()
-		self.zone_meta_max  = zone_info.zi_meta_range.max_address.GetIntValue()
+		self.pagesize = ESBValue('page_size').int_value
+		self.zone_map_min   = zone_info.get('zi_map_range.min_address').int_value
+		self.zone_map_max   = zone_info.get('zi_map_range.max_address').int_value
+		self.zone_meta_min  = zone_info.get('zi_meta_range.min_address').int_value
+		self.zone_meta_max  = zone_info.get('zi_meta_range.max_address').int_value
 		self.zone_array     = zone_array
-		self.zp_nopoison_cookie = ESBValue('zp_nopoison_cookie').GetIntValue()
+		self.zp_nopoison_cookie = ESBValue('zp_nopoison_cookie').int_value
 
 		if isPageIndex:
 			# sign extend
@@ -623,10 +636,11 @@ class ZoneMetaOld(object):
 			self.kind = 'Metadata'
 			addr -= (addr - self.zone_meta_min) % size_of('struct zone_page_metadata')
 			self.meta_addr = addr
-			self.meta = ESBValue.initWithAddressType(addr, 'struct zone_page_metadata *')
+			self.meta = ESBValue.init_with_address(addr, 'struct zone_page_metadata *')
 
-			self.page_addr = self.zone_map_min + ((addr - self.zone_meta_min) / size_of('struct zone_page_metadata') * self.pagesize)
+			self.page_addr = self.zone_map_min + ((addr - self.zone_meta_min) // size_of('struct zone_page_metadata') * self.pagesize)
 			self.first_offset = 0
+		
 		elif self.zone_map_min <= addr and addr < self.zone_map_max:
 			addr &= ~(self.pagesize - 1)
 			page_idx = (addr - self.zone_map_min) // self.pagesize
@@ -634,69 +648,82 @@ class ZoneMetaOld(object):
 			self.kind = 'Element'
 			self.page_addr = addr
 			self.meta_addr = self.zone_meta_min + page_idx * size_of('struct zone_page_metadata')
-			self.meta = ESBValue.initWithAddressType(self.meta_addr, "struct zone_page_metadata *")
+			self.meta = ESBValue.init_with_address(self.meta_addr, "struct zone_page_metadata *")
 			self.first_offset = 0
+		
 		elif self._looksForeign(addr):
 			self.kind = 'Element (F)'
 			addr &= ~(self.pagesize - 1)
 			self.page_addr = addr
 			self.meta_addr = addr
-			self.meta = ESBValue.initWithAddressType(addr, "struct zone_page_metadata *")
+			self.meta = ESBValue.init_with_address(addr, "struct zone_page_metadata *")
 			self.first_offset = 32 # ZONE_FOREIGN_PAGE_FIRST_OFFSET in zalloc.c
+		
 		else:
 			self.kind = 'Unknown'
-			self.meta = None
+			self.meta = ESBValue.init_with_address(0, "struct zone_page_metadata *")
 			self.page_addr = 0
 			self.meta_addr = 0
 			self.first_offset = 0
 	
-	def __str__(self) -> str:
+	def __str__(self: Self) -> str:
 		return f'ZoneMetaOld(kind="{self.kind}", meta_addr="{self.meta_addr}", page_addr="{self.page_addr}")'
 			
-	def isSecondaryPage(self):
-		return self.meta and self.meta.zm_secondary_page
+	def isSecondaryPage(self: Self) -> int:
+		return self.meta.is_not_null and self.meta.get('zm_secondary_page').is_not_null
 
-	def getPageCount(self):
-		return self.meta and self.meta.zm_page_count or 0
+	def getPageCount(self: Self) -> int:
+		if self.meta.is_not_null and self.meta.get('zm_page_count').is_not_null:
+			return self.meta.get('zm_page_count').int_value
+		return 0
 
-	def getAllocCount(self):
-		return self.meta and self.meta.zm_alloc_count or 0
+	def getAllocCount(self: Self) -> int:
+		if self.meta.is_not_null and self.meta.get('zm_alloc_count').is_not_null:
+			return self.meta.get('zm_page_count').int_value
+		return 0
 
-	def getReal(self):
+	def getReal(self: Self) -> 'ZoneMetaOld':
 		if self.isSecondaryPage():
-			return ZoneMeta(self.meta.GetIntValue() - self.meta.zm_page_count.GetIntValue())
+			return ZoneMetaOld(self.zone_array, self.meta.int_value - self.meta.get('zm_page_count').int_value)
 
 		return self
 
-	def getFreeList(self):
-		if not self.meta:
-			return None
-		zm_freelist_offs = self.meta.zm_freelist_offs.GetIntValue()
-		if (self.meta != None) and (zm_freelist_offs != 0xffff):
-			return ESBValue.initWithAddressType(self.page_addr + zm_freelist_offs, 'vm_offset_t *')
-		return None
+	def getFreeList(self: Self) -> ESBValue:
+		if self.meta.is_null:
+			return ESBValue.init_with_address(0, 'vm_offset_t *')
+
+		zm_freelist_offs = self.meta.get('zm_freelist_offs').int_value
+		vm_offset_addr = 0
+		if self.meta.is_not_null and (zm_freelist_offs != 0xffff):
+			vm_offset_addr = self.page_addr + zm_freelist_offs
+		
+		return ESBValue.init_with_address(vm_offset_addr, 'vm_offset_t *')
 	
-	def isInFreeList(self, element_addr):
+	def isInFreeList(self: Self, element_addr: int) -> bool:
 		cur = self.getFreeList()
 		if cur == None:
 			return False
 		
-		while cur.GetIntValue():
-			if cur.GetIntValue() == element_addr:
+		while cur.is_not_null:
+			if cur.int_value == element_addr:
 				return True
 			
-			cur = cur.Dereference()
-			next_addr = cur.GetIntValue() ^ self.zp_nopoison_cookie
-			cur = ESBValue.initWithAddressType(next_addr, 'vm_offset_t *')
+			cur = cur.dereference()
+			next_addr = cur.int_value ^ self.zp_nopoison_cookie
+			cur = ESBValue.init_with_address(next_addr, 'vm_offset_t *')
 		
 		return False
 	
-	def isInAllocationList(self, element_addr):
-		esize = self.zone_array[self.meta.zm_index.GetIntValue()].z_elem_size.GetIntValue()
+	def isInAllocationList(self: Self, element_addr: int) -> bool:
+		zone = self.zone_array[self.meta.get('zm_index').int_value]
+		if not zone:
+			return False
+
+		esize = zone.get('z_elem_size').int_value
 		offs  = self.first_offset
 		end   = self.pagesize
-		if not self.meta.zm_percpu.GetIntValue():
-			end *= self.meta.zm_page_count.GetIntValue()
+		if not self.meta.get('zm_percpu').int_value:
+			end *= self.meta.get('zm_page_count').int_value
 
 		while offs + esize <= end:
 			if (self.page_addr + offs) == element_addr:
@@ -706,25 +733,29 @@ class ZoneMetaOld(object):
 		
 		return False
 
-	def iterateFreeList(self):
+	def iterateFreeList(self: Self) -> Iterator[ESBValue]:
 		cur = self.getFreeList()
 		if cur != None:
-			while cur.GetIntValue():
+			while cur.is_not_null:
 				yield cur
 
-				cur = cur.Dereference()
-				next_addr = cur.GetIntValue() ^ self.zp_nopoison_cookie
-				cur = ESBValue.initWithAddressType(next_addr, 'vm_offset_t *')
+				cur = cur.dereference()
+				next_addr = cur.int_value ^ self.zp_nopoison_cookie
+				cur = ESBValue.init_with_address(next_addr, 'vm_offset_t *')
 
-	def iterateElements(self):
+	def iterateElements(self: Self) -> Iterator[int]:
 		if self.meta is None:
 			return
 
-		esize = self.zone_array[self.meta.zm_index.GetIntValue()].z_elem_size.GetIntValue()
+		zone = self.zone_array[self.meta.get('zm_index').int_value]
+		if not zone:
+			return
+
+		esize = zone.get('z_elem_size').int_value
 		offs  = self.first_offset
 		end   = self.pagesize
-		if not self.meta.zm_percpu.GetIntValue():
-			end *= self.meta.zm_page_count.GetIntValue()
+		if not self.meta.get('zm_percpu').int_value:
+			end *= self.meta.get('zm_page_count').int_value
 
 		while offs + esize <= end:
 			yield self.page_addr + offs
@@ -737,21 +768,22 @@ class ZoneMetaNew(object):
 	"""
 	Helper class that helpers walking metadata
 	"""
+	zone: ESBValue
 
-	def __init__(self, zone_array, addr, isPageIndex = False):
-		self.pagesize  = ESBValue('page_size').GetIntValue()
+	def __init__(self: Self, zone_array: 'XNUZones', addr: int, isPageIndex: bool = False):
+		self.pagesize  = ESBValue('page_size').int_value
 		self.zone_info = ESBValue('zone_info')
 		self.zone_array = zone_array
 
-		def load_range(var):
-			return (var.min_address.GetIntValue(), var.max_address.GetIntValue())
+		def load_range(var: ESBValue) -> Tuple[int, int]:
+			return (var.get('min_address').int_value, var.get('max_address').int_value)
 
-		def in_range(x, r):
+		def in_range(x: int, r: Tuple[int, int]) -> bool:
 			return x >= r[0] and x <= r[1]
 
-		self.meta_range = load_range(self.zone_info.zi_meta_range)
-		self.native_range = load_range(self.zone_info.zi_map_range[ZONE_ADDR_NATIVE])
-		self.foreign_range = load_range(self.zone_info.zi_map_range[ZONE_ADDR_FOREIGN])
+		self.meta_range = load_range(self.zone_info.get('zi_meta_range'))
+		self.native_range = load_range(self.zone_info.get('zi_map_range')[ZONE_ADDR_NATIVE])
+		self.foreign_range = load_range(self.zone_info.get('zi_map_range')[ZONE_ADDR_FOREIGN])
 		self.addr_base = min(self.foreign_range[0], self.native_range[0])
 
 		if isPageIndex:
@@ -764,7 +796,7 @@ class ZoneMetaNew(object):
 			self.kind = 'Metadata'
 			addr -= addr % size_of('struct zone_page_metadata')
 			self.meta_addr = addr
-			self.meta = ESBValue.initWithAddressType(addr, "struct zone_page_metadata *")
+			self.meta = ESBValue.init_with_address(addr, "struct zone_page_metadata *")
 
 			self.page_addr = self.addr_base + ((addr - self.meta_range[0]) // size_of('struct zone_page_metadata') * self.pagesize)
 		elif in_range(addr, self.native_range) or in_range(addr, self.foreign_range):
@@ -774,178 +806,204 @@ class ZoneMetaNew(object):
 			self.kind = 'Element'
 			self.page_addr = addr
 			self.meta_addr = self.meta_range[0] + page_idx * size_of('struct zone_page_metadata')
-			self.meta = ESBValue.initWithAddressType(self.meta_addr, "struct zone_page_metadata *")
+			self.meta = ESBValue.init_with_address(self.meta_addr, "struct zone_page_metadata *")
 		else:
 			self.kind = 'Unknown'
-			self.meta = None
+			self.meta = ESBValue.init_with_address(0, "struct zone_page_metadata *")
 			self.page_addr = 0
 			self.meta_addr = 0
 
-		if self.meta:
-			self.zone = self.zone_array[self.meta.zm_index.GetIntValue()]
+		if self.meta.is_not_null:
+			zone = self.zone_array[self.meta.get('zm_index').int_value]
+			if zone == None:
+				self.zone = ESBValue.init_null('struct zone *')
+			else:
+				self.zone = zone
 		else:
-			self.zone = None
+			self.zone = ESBValue.init_null('struct zone *')
 	
-	def __str__(self) -> str:
+	def __str__(self: Self) -> str:
 		return f'ZoneMetaNew(kind="{self.kind}", meta_addr="{self.meta_addr}", page_addr="{self.page_addr}")'
 
-	def isSecondaryPage(self):
-		return self.meta and self.meta.zm_chunk_len.GetIntValue() >= 0xe
+	@property
+	def isSecondaryPage(self: Self) -> bool:
+		return self.meta and self.meta.get('zm_chunk_len').int_value >= 0xe
 
-	def getPageCount(self):
-		n = self.meta and self.meta.zm_chunk_len.GetIntValue() or 0
-		if self.zone and self.zone.z_percpu.GetIntValue():
-			n *= ESBValue('zpercpu_early_count').GetIntValue()
+	def getPageCount(self: Self):
+		n = self.meta and self.meta.get('zm_chunk_len').int_value or 0
+		if self.zone and self.zone.get('z_percpu').int_value:
+			n *= ESBValue('zpercpu_early_count').int_value
 		return n
 
-	def getAllocAvail(self):
+	def getAllocAvail(self: Self):
 		if not self.meta: return 0
-		chunk_len = self.meta.zm_chunk_len.GetIntValue()
-		return chunk_len * self.pagesize // self.zone.z_elem_size.GetIntValue()
+		chunk_len = self.meta.get('zm_chunk_len').int_value
+		return chunk_len * self.pagesize // self.zone.get('z_elem_size').int_value
 
-	def getAllocCount(self):
+	def getAllocCount(self: Self):
 		if not self.meta: return 0
-		return self.meta.zm_alloc_size.GetIntValue() // self.zone.z_elem_size.GetIntValue()
+		return self.meta.get('zm_alloc_size').int_value // self.zone.get('z_elem_size').int_value
 
-	def getReal(self):
-		if self.isSecondaryPage():
-			return ZoneMeta(self.meta.GetIntValue() - size_of('struct zone_page_metadata') * self.meta.zm_page_index.GetIntValue())
+	def getReal(self: Self) -> 'ZoneMetaNew':
+		if self.isSecondaryPage:
+			# return ZoneMeta()
+			addr = self.meta.int_value - size_of('struct zone_page_metadata') * self.meta.get('zm_page_index').int_value
+			return ZoneMetaNew(self.zone_array, addr)
 
 		return self
 
-	def getElementAddress(self, addr):
+	def getElementAddress(self: Self, addr: int) -> int:
 		meta  = self.getReal()
-		esize = meta.zone.z_elem_size.GetIntValue()
+		esize = meta.zone.get('z_elem_size').int_value
 		start = meta.page_addr
 
 		if esize == 0:
-			return None
+			return 0
 
 		estart = addr - start
 		return start + estart - (estart % esize)
 
-	def getInlineBitmapChunkLength(self):
-		if self.zone.z_percpu:
-			return self.zone.z_chunk_pages.GetIntValue()
-		return self.meta.zm_chunk_len.GetIntValue()
+	def getInlineBitmapChunkLength(self: Self):
+		if self.zone.get('z_percpu').is_not_null:
+			return self.zone.get('z_chunk_pages').int_value
+		return self.meta.get('zm_chunk_len').int_value
 
-	def getBitmapSize(self):
-		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+	def getBitmapSize(self: Self) -> int:
+		if self.zone.is_null:
 			return 0
-		if self.meta.zm_inline_bitmap:
+
+		if not self.meta or self.zone.get('z_permanent').int_value or not self.meta.get('zm_chunk_len').int_value:
+			return 0
+
+		if self.meta.get('zm_inline_bitmap').is_not_null:
 			return -4 * self.getInlineBitmapChunkLength()
-		return 8 << (self.meta.zm_bitmap.GetIntValue() & 0x7)
+		
+		return 8 << (self.meta.get('zm_bitmap').int_value & 0x7)
 
-	def getBitmap(self):
-		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+	def getBitmap(self: Self) -> int:
+		if self.zone.is_null:
 			return 0
-		if self.meta.zm_inline_bitmap:
-			return self.meta.zm_bitmap.GetLoadAddress()
-		bbase = self.zone_info.zi_bits_range.min_address.GetIntValue()
-		index = self.meta.zm_bitmap.GetIntValue() & ~0x7
+
+		if not self.meta or self.zone.get('z_permanent').int_value or not self.meta.get('zm_chunk_len').int_value:
+			return 0
+		
+		if self.meta.get('zm_inline_bitmap').is_valid:
+			return self.meta.get('zm_bitmap').addr_of()
+		
+		bbase = self.zone_info.get('zi_bits_range.min_address').int_value
+		index = self.meta.get('zm_bitmap').int_value & ~0x7
 		return bbase + index
 
-	def getFreeCountSlow(self):
-		if not self.meta or self.zone.z_permanent.GetIntValue() or not self.meta.zm_chunk_len.GetIntValue():
+	def getFreeCountSlow(self: Self) -> int:
+		if self.zone.is_null:
+			return 0
+
+		if not self.meta or self.zone.get('z_permanent').int_value or not self.meta.get('zm_chunk_len').int_value:
 			return self.getAllocAvail() - self.getAllocCount()
 
 		n = 0
-		if self.meta.zm_inline_bitmap.GetIntValue():
+		if self.meta.get('zm_inline_bitmap').is_not_null:
 			for i in range(0, self.getInlineBitmapChunkLength()):
-				m = ESBValue.initWithAddressType(self.meta_addr + i * 16, 'struct zone_page_metadata *');
-				bits = m.zm_bitmap.GetIntValue()
+				m = ESBValue.init_with_address(self.meta_addr + i * 16, 'struct zone_page_metadata *');
+				bits = m.get('zm_bitmap').int_value
 				while bits:
 					n += 1
 					bits &= bits - 1
 		else:
-			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
-			for i in range(0, 1 << (self.meta.zm_bitmap.GetIntValue() & 0x7)):
-				bits = bitmap[i].GetIntValue()
+			bitmap = ESBValue.init_with_address(self.getBitmap(), 'uint64_t *')
+			for i in range(0, 1 << (self.meta.get('zm_bitmap').int_value & 0x7)):
+				bits = bitmap[i].int_value
 				while bits:
 					n += 1
 					bits &= bits - 1
+		
 		return n
 
-	def isElementFree(self, addr):
+	def isElementFree(self: Self, addr: int) -> bool:
 		meta = self.meta
+		if self.zone.is_null:
+			return False
 
-		if not meta or self.zone.z_permanent.GetIntValue() or not meta.zm_chunk_len.GetIntValue():
+		if meta.is_not_null or self.zone.get('z_permanent').int_value or not meta.get('zm_chunk_len').int_value:
 			return True
 		
 		start = self.page_addr
-		esize = self.zone.z_elem_size.GetIntValue()
+		esize = self.zone.get('z_elem_size').int_value
 		eidx  = (addr - start) // esize
-		if meta.zm_inline_bitmap.GetIntValue():
+		if meta.get('zm_inline_bitmap').is_not_null:
 			idx = (eidx // 32)
-			meta = ESBValue.initWithAddressType(meta.GetIntValue() + idx, 'struct zone_page_metadata *')
-			bits = meta.zm_bitmap.GetIntValue()
+			meta = ESBValue.init_with_address(meta.int_value + idx, 'struct zone_page_metadata *')
+			bits = meta.get('zm_bitmap').int_value
 			return bits & (1 << (eidx % 32)) != 0
 		else:
-			bitmap = ESBValue.initWithAddressType(self.getBitmap(), 'uint64_t *')
-			bits = bitmap[eidx // 64].GetIntValue()
+			bitmap = ESBValue.init_with_address(self.getBitmap(), 'uint64_t *')
+			bits = bitmap[eidx // 64].int_value
 			return (bits & (1 << (eidx % 64))) != 0
 	
-	def isInFreeList(self, addr):
+	def isInFreeList(self: Self, addr: int) -> bool:
 		return self.isElementFree(addr)
 
-	def iterateElements(self):
-		if self.meta is None:
+	def iterateElements(self: Self) -> Iterator[int]:
+		if self.meta.is_null or self.zone.is_null:
 			return
-		esize = self.zone.z_elem_size.GetIntValue()
+			
+		esize = self.zone.get('z_elem_size').int_value
 		start = 0
-		end   = self.pagesize * self.meta.zm_chunk_len.GetIntValue()
+		end   = self.pagesize * self.meta.get('zm_chunk_len').int_value
 		end  -= end % esize
 
 		for offs in range(start, end, esize):
 			yield self.page_addr + offs
 
-ZoneMeta = None
-gkalloc_heap_names = []
+gkalloc_heap_names: List[str] = []
 
 class XNUZones:
+	zones_access_cache: Dict[str, ESBValue]
+	logged_zones: Dict[str, ESBValue]
+	pointer_size: int
+	is_zone_meta_old: bool
+
 	def __init__(self):
 		# get all zones symbols
 		self.kalloc_heap_names = []
 		self.zones_access_cache = {}
-		self.zone_index_array = []
 		self.logged_zones = {}
+		self.zone_index_array = []
 		self.pointer_size = 8
-		self.zone_security_array = None
+		# self.zone_security_array = None
 		self.zone_struct_size = 0
 		self.zone_array_address = 0
-		self.target = None
+		self.is_zone_meta_old = False
 	
-	def is_loaded(self) -> bool:
-		if not len(self.kalloc_heap_names):
-			return False
-		return True
+	@property
+	def is_loaded(self: Self) -> bool:
+		return False if not len(self.kalloc_heap_names) else True
 
-	def load_from_kernel(self, target):
-		global ZoneMeta
+	def load_from_kernel(self: Self, target: SBTarget) -> bool:
 		global gkalloc_heap_names
 
 		self.pointer_size = get_pointer_size()
-		self.zone_security_array = ESBValue('zone_security_array')
-		self.zone_struct_size = size_of('zone')
-
 		self.target = target
 
-		zone_array = ESBValue('zone_array')
-		if not xnu_esbvalue_check(zone_array):
-			return
+		try:
+			self.zone_security_array = ESBValue('zone_security_array')
+			self.zone_struct_size = size_of('zone')
+			zone_array = ESBValue('zone_array')
+			num_zones = ESBValue('num_zones')
+		except ESBValueException:
+			print(f'[!] Unable to find zone_array/num_zones/zone_security_array/zone symbol in this kernel')
+			return False
 		
-		num_zones = ESBValue('num_zones')
-		if not xnu_esbvalue_check(num_zones):
-			return
+		num_zones = num_zones.int_value
 		
-		self.zone_array_address = zone_array.GetLoadAddress() # save zone_array base address for later used
+		self.zone_array_address = zone_array.addr_of() # save zone_array base address for later used
 		if len(gkalloc_heap_names) < 4:
 			kalloc_heap_names = ESBValue('kalloc_heap_names')
 			for i in range(4):
-				kalloc_heap_name = kalloc_heap_names[i].CastTo('char *')
-				gkalloc_heap_names.append(kalloc_heap_name.GetStrValue())
+				kalloc_heap_name = kalloc_heap_names[i].cast_to('char *')
+				gkalloc_heap_names.append(kalloc_heap_name.str_value)
 
-		for idx in range(num_zones.GetIntValue()):
+		for idx in range(num_zones):
 			zone_name = self._extract_zone_name(zone_array[idx])
 			zone = zone_array[idx]
 			zone.set_attribute('zone_name', zone_name)
@@ -958,62 +1016,63 @@ class XNUZones:
 				# cache logged zone for lookup
 				self.logged_zones[zone_name] = zone
 		
-		if ESBValue('zp_nopoison_cookie').IsValid():
-			ZoneMeta = ZoneMetaOld
-		else:
-			ZoneMeta = ZoneMetaNew
+		try:
+			_ = ESBValue('zp_nopoison_cookie')
+			self.is_zone_meta_old = True
+		except ESBValueException:
+			self.is_zone_meta_old = False
+		
+		return True
 	
-	def is_zone_logging(self, zone : ESBValue) -> bool:
-		return zone.zlog_btlog.GetIntValue() != 0
+	def is_zone_logging(self: Self, zone: ESBValue) -> bool:
+		return not zone.get('zlog_btlog').is_null
 	
-	def _extract_zone_name(self, zone : ESBValue) -> str:
-		z_name = zone.z_name.GetStrValue()
+	def _extract_zone_name(self: Self, zone: ESBValue) -> str:
+		z_name = zone.get('z_name').str_value
 			
-		if zone.kalloc_heap.IsValid():
-			heap_name_idx = zone.kalloc_heap.GetIntValue()
+		if zone.get('kalloc_heap').is_valid:
+			heap_name_idx = zone.get('kalloc_heap').int_value
 		else:
 			# macOS 12 will change how we retrieve kalloc heap name checkout zone_heap_name
-			zone_idx = (zone.GetLoadAddress() - self.zone_array_address) // self.zone_struct_size
-			heap_name_idx = self.zone_security_array[zone_idx].z_kheap_id.GetIntValue()
+			zone_idx = (zone.addr_of() - self.zone_array_address) // self.zone_struct_size
+			heap_name_idx = self.zone_security_array[zone_idx].get('z_kheap_id').int_value
 
 		if heap_name_idx < 4:
 			return gkalloc_heap_names[heap_name_idx] + z_name
 
 		return z_name
 
-	def __len__(self):
+	def __len__(self: Self) -> int:
 		return len(self.zones_access_cache)
 	
-	def __iter__(self):
+	def __iter__(self: Self):
 		for zone_name in self.zones_access_cache:
 			yield self.zones_access_cache[zone_name]
 
-	def __getitem__(self, idx):
+	def __getitem__(self: Self, idx: int) -> Optional[ESBValue]:
 		if idx >= len(self.zone_index_array):
 			return None
 		
 		zone_name = self.zone_index_array[idx]
 		return self.zones_access_cache[zone_name]
 	
-	def has_zone_name(self, zone_name : str) -> bool:
-		if zone_name not in self.zones_access_cache:
-			return False
-		return True
+	def has_zone_name(self: Self, zone_name: str) -> bool:
+		return False if zone_name not in self.zones_access_cache else True
 	
-	def iter_zone_name(self):
+	def iter_zone_name(self: Self):
 		for zone_name in self.zones_access_cache:
 			yield zone_name
 	
-	def get_zone_by_name(self, zone_name : str) -> ESBValue:
+	def get_zone_by_name(self: Self, zone_name: str) -> Optional[ESBValue]:
 		if zone_name in self.zones_access_cache:
 			return self.zones_access_cache[zone_name]
 		
 		return None
 	
-	def get_zone_id_by_name(self, zone_name : str) -> int:
+	def get_zone_id_by_name(self: Self, zone_name: str) -> int:
 		return self.zone_index_array.index(zone_name)
 	
-	def get_zones_by_regex(self, zone_name_regex : str) -> list:
+	def get_zones_by_regex(self: Self, zone_name_regex: str) -> list:
 		zones = []
 
 		if self.zones_access_cache:
@@ -1023,7 +1082,7 @@ class XNUZones:
 
 		return zones
 	
-	def show_zone_being_logged(self):
+	def show_zone_being_logged(self: Self):
 		if not self.logged_zones:
 			return
 		
@@ -1031,17 +1090,17 @@ class XNUZones:
 			zone = self.logged_zones[logged_zone_name]
 			zone_name = zone.get_attribute('zone_name')
 			logged_zone_idx = zone.get_attribute('zone_idx')
-			zlog_btlog = zone.zlog_btlog
-			if zlog_btlog.GetIntValue() != 0:
-				print(f'- zone_array[{logged_zone_idx}]: {zone_name} log at {zlog_btlog.GetValue()}')
+			zlog_btlog = zone.get('zlog_btlog')
+			if not zlog_btlog.is_null:
+				print(f'- zone_array[{logged_zone_idx}]: {zone_name} log at {zlog_btlog.value}')
 	
-	def get_logged_zone_index_by_name(self, zone_name : str) -> int:
+	def get_logged_zone_index_by_name(self: Self, zone_name: str) -> int:
 		try:
-			return self.logged_zones[zone_name].get_attribute('zone_idx')
+			return typing.cast(int, self.logged_zones[zone_name].get_attribute('zone_idx'))
 		except KeyError:
 			return -1
 	
-	def zone_find_stack_elem(self, zone_name : str, target_element : int, action : int):
+	def zone_find_stack_elem(self: Self, zone_name: str, target_element: int, action: int):
 		""" Zone corruption debugging: search the zone log and print out the stack traces for all log entries that
 			refer to the given zone element.
 			Usage: zstack_findelem <btlog addr> <elem addr>
@@ -1051,10 +1110,14 @@ class XNUZones:
 			zfree operations which tells you who touched the element in the recent past.  This also makes
 			double-frees readily apparent.
 		"""
-		log_records = ESBValue('log_records')
-		corruption_debug_flag = ESBValue('corruption_debug_flag')
+		try:
+			log_records = ESBValue('log_records')
+			corruption_debug_flag = ESBValue('corruption_debug_flag')
+		except ESBValueException:
+			print(f'[!] Unable to find log_records/corruption_debug_flag in this kernel')
+			return
 
-		if not log_records.GetIntValue() or not corruption_debug_flag.GetBoolValue():
+		if not log_records.int_value or not corruption_debug_flag.int_value:
 			print("[!] Zone logging with corruption detection not enabled. Add '-zc zlog=<zone name>' to boot-args.")
 			return False
 		
@@ -1067,18 +1130,17 @@ class XNUZones:
 			print(f'[!] Unable to track this zone {zone_name}, please add this zone into boot-args')
 			return
 		
-		btlog_ptr = zone.zlog_btlog.CastTo('btlog_t *')
+		btlog_ptr = zone.get('zlog_btlog').cast_to('btlog_t *')
 		
-		btrecord_size = btlog_ptr.btrecord_size.GetIntValue()
-		btrecords = btlog_ptr.btrecords.GetIntValue()
-		depth = btlog_ptr.btrecord_btdepth.GetIntValue()
+		btrecord_size = btlog_ptr.get('btrecord_size').int_value
+		btrecords = btlog_ptr.get('btrecords').int_value
+		depth = btlog_ptr.get('btrecord_btdepth').int_value
 
 		prev_operation = -1
 		scan_items = 0
 
-		element_hash_queue = btlog_ptr.elem_linkage_un.element_hash_queue
-		hashelem = element_hash_queue.tqh_first
-		hashelem = hashelem.CastTo('btlog_element_t *')
+		element_hash_queue = btlog_ptr.get('elem_linkage_un').get('element_hash_queue')
+		hashelem = element_hash_queue.get('tqh_first').cast_to('btlog_element_t *')
 
 		if (target_element >> 32) != 0:
 			target_element = target_element ^ 0xFFFFFFFFFFFFFFFF
@@ -1088,17 +1150,17 @@ class XNUZones:
 		'''
 			Loop through element_hash_queue linked list to find record information of our target_element
 		'''
-		while hashelem.GetIntValue() != 0:
-			hashelem_value = hashelem.elem.GetIntValue()
+		while not hashelem.is_null:
+			hashelem_value = hashelem.get('elem').int_value
 			if hashelem_value == target_element:
 				# found record information of target_element
 
-				recindex = hashelem.recindex.GetIntValue()
+				recindex = hashelem.get('recindex').int_value
 
 				recoffset = recindex * btrecord_size
-				record = ESBValue.initWithAddressType(btrecords + recoffset, 'btlog_record_t *')
+				record = ESBValue.init_with_address(btrecords + recoffset, 'btlog_record_t *')
 				# extract action for this chunk address and see if this chunk was freed or allocated
-				record_operation = record.operation.GetIntValue()
+				record_operation = record.get('operation').int_value
 
 				if action == 0:
 					out_str = ('-' * 8)
@@ -1140,14 +1202,14 @@ class XNUZones:
 				prev_operation = record_operation
 				scan_items = 0
 
-			hashelem = hashelem.element_hash_link.tqe_next
-			hashelem = hashelem.CastTo('btlog_element_t *')
+			hashelem = hashelem.get('element_hash_link').get('tqe_next')
+			hashelem = hashelem.cast_to('btlog_element_t *')
 
 			scan_items += 1
 			if scan_items % 100 == 0:
 				print("Scanning is ongoing. {0: <d} items scanned since last check." .format(scan_items))
 	
-	def get_btlog_backtrace(self, depth, zstack_record):
+	def get_btlog_backtrace(self: Self, depth: int, zstack_record: ESBValue) -> str:
 		""" Helper routine for getting a BT Log record backtrace stack.
 			params:
 				depth:int - The depth of the zstack record
@@ -1161,16 +1223,15 @@ class XNUZones:
 		if not zstack_record:
 			return "Zstack record none!"
 		
-		# zstack_record_bt = zstack_record.GetChildMemberWithName('bt')
-		zstack_record_bt = zstack_record.bt
-		pc_array = read_mem(zstack_record_bt.GetLoadAddress(), depth * self.pointer_size)
+		zstack_record_bt = zstack_record.get('bt')
+		pc_array = read_mem(zstack_record_bt.addr_of(), depth * self.pointer_size)
 
 		while frame < depth:
 			frame_pc = unpack('<Q', pc_array[frame*self.pointer_size : (frame + 1) * self.pointer_size])[0]
 			if not frame_pc:
 				break
 			
-			sb_addr = self.target.ResolveLoadAddress(frame_pc)
+			sb_addr = get_target().ResolveLoadAddress(frame_pc)
 			if sb_addr:
 				symbol_str = str(sb_addr)
 			else:
@@ -1180,24 +1241,27 @@ class XNUZones:
 
 		return out_str
 	
-	def zone_iterate_queue(self, page):
-		cur_page_addr = page.packed_address.GetIntValue()
-		while cur_page_addr:
-			meta = ZoneMeta(self, cur_page_addr, isPageIndex=True)
-			# print(meta)
+	def zone_iterate_queue(self: Self, page: ESBValue):
+		cur_page_addr = page.get('packed_address')#.GetIntValue()
+		while not cur_page_addr.is_null:
+			if self.is_zone_meta_old:
+				meta = ZoneMetaOld(self, cur_page_addr.int_value, isPageIndex=True)
+			else:
+				meta = ZoneMetaNew(self, cur_page_addr.int_value, isPageIndex=True)
+
 			yield meta
-			page = meta.meta.zm_page_next
-			cur_page_addr = page.packed_address.GetIntValue()
+			page = meta.meta.get('zm_page_next')
+			cur_page_addr = cur_page_addr.get('packed_address')
 	
-	def iter_chunks_at_zone(self, zone : ESBValue):
-		if not zone.z_self.GetIntValue() or zone.permanent.GetIntValue():
+	def iter_chunks_at_zone(self: Self, zone: ESBValue):
+		if zone.get('z_self').is_null or zone.get('permanent').int_value:
 			yield 'None', 0
 		
-		if ZoneMeta == ZoneMetaOld:
-			iteration_list = [zone.pages_any_free_foreign, zone.pages_all_used_foreign,
-					zone.pages_intermediate, zone.pages_all_used]
+		if self.is_zone_meta_old:
+			iteration_list = [zone.get('pages_any_free_foreign'), zone.get('pages_all_used_foreign'),
+					zone.get('pages_intermediate'), zone.get('pages_all_used')]
 		else:
-			iteration_list = [zone.z_pageq_full, zone.z_pageq_partial, zone.z_pageq_empty, zone.z_pageq_va]
+			iteration_list = [zone.get('z_pageq_full'), zone.get('z_pageq_partial'), zone.get('z_pageq_empty'), zone.get('z_pageq_va')]
 
 		for head in iteration_list:
 			for meta in self.zone_iterate_queue(head):
@@ -1208,7 +1272,7 @@ class XNUZones:
 					
 					yield status, elem
 	
-	def get_chunk_info_at_zone(self, zone : ESBValue, chunk_addr : int) -> str:
+	def get_chunk_info_at_zone(self: Self, zone: ESBValue, chunk_addr: int) -> str:
 		for status, elem in self.iter_chunks_at_zone(zone):
 			if status == 'None':
 				break
@@ -1218,31 +1282,14 @@ class XNUZones:
 		
 		return 'None'
 			
-	def get_chunk_info_at_zone_name(self, zone_name : str, chunk_addr : int) -> str:
+	def get_chunk_info_at_zone_name(self: Self, zone_name: str, chunk_addr: int) -> str:
 		if not self.has_zone_name(zone_name):
 			return 'None'
 		
 		zone = self.zones_access_cache[zone_name]
 		return self.get_chunk_info_at_zone(zone, chunk_addr)
 	
-	def get_info_chunks_at_range(self, from_zone_idx, to_zone_idx, chunk_addr):
-		# assert (from_zone_idx >=0 and to_zone_idx < len(self)) and (from_zone_idx < to_zone_idx), \
-		# 				'from_zone_idx or to_zone_idx is out of bound'
-
-		# for i in range(from_zone_idx, to_zone_idx):
-		# 	zone = self[i]
-		# 	ret = self.get_chunk_info_at_zone(i, chunk_addr)
-		# 	if ret != 'None':
-		# 		info = {
-		# 			'zone_name': zone.get_attribute('zone_name'),
-		# 			'zone_idx': i,
-		# 			'status': ret 
-		# 		}
-		# 		return info
-		
-		return None
-	
-	def find_chunk_info(self, chunk_addr : int):
+	def find_chunk_info(self: Self, chunk_addr: int):
 		'''
 			Walk through the hold zone in zone_array, this method could take time
 		'''
@@ -1260,7 +1307,7 @@ class XNUZones:
 		
 		return None
 
-	def inspect_zone_name(self, zone_name : str):
+	def inspect_zone_name(self: Self, zone_name: str):
 		'''
 			List all chunks and their status for a zone
 		'''
@@ -1289,7 +1336,7 @@ class XNUZones:
 			print(COLORS['RESET'], end='')
 			num+=1
 	
-	def get_allocated_elems(self, zone_name : str) -> list:
+	def get_allocated_elems(self: Self, zone_name: str) -> list:
 		elems = []
 
 		zone = self.get_zone_by_name(zone_name)
@@ -1300,9 +1347,9 @@ class XNUZones:
 			if status == 'Allocated':
 				elems.append(elem)
 		
-		return elem
+		return elems
 	
-	def get_freed_elems(self, zone_name : str) -> list:
+	def get_freed_elems(self: Self, zone_name: str) -> list:
 		elems = []
 
 		zone = self.get_zone_by_name(zone_name)
@@ -1313,7 +1360,7 @@ class XNUZones:
 			if status == 'Freed':
 				elems.append(elem)
 		
-		return elem
+		return elems
 
 # --- IOKit stuffs --- #
 IOKIT_OBJECTS = (
@@ -1321,7 +1368,7 @@ IOKIT_OBJECTS = (
 	'OSBoolean', 'OSOrderedSet', 'OSNumber', 'OSSet'
 )
 
-def iokit_get_type(object_address) -> str:
+def iokit_get_type(object_address: int) -> str:
 	vtable = read_u64(object_address)
 	if not vtable:
 		return ''
@@ -1343,7 +1390,7 @@ def iokit_print(object_address : int, level = 0):
 		return
 
 	# cast this address to sepecific IOKit class
-	iokit_object = ESBValue.initWithAddressType(object_address, iokit_type + ' *')
+	iokit_object = ESBValue.init_with_address(object_address, iokit_type + ' *')
 
 	if level == 0:
 		print(f'({iokit_type} *){hex(object_address)} : ', end='')
@@ -1351,8 +1398,8 @@ def iokit_print(object_address : int, level = 0):
 	if iokit_type == 'OSDictionary':
 		# loop through this OSDictionary
 		print(' '*level + '{')
-		dict_count = iokit_object.count.GetIntValue()
-		dict_ptr = iokit_object.dictionary.GetIntValue()
+		dict_count = iokit_object.get('count').int_value
+		dict_ptr = iokit_object.get('dictionary').int_value
 
 		for i in range(dict_count):
 			key_ptr = read_u64(dict_ptr)
@@ -1370,10 +1417,10 @@ def iokit_print(object_address : int, level = 0):
 
 	elif iokit_type == 'OSArray':
 		print(' '*level + '[')
-		array_count = iokit_object.count.GetIntValue()
-		array_ptr   = iokit_object.array.GetIntValue()
+		array_count = iokit_object.get('count').int_value
+		array_ptr   = iokit_object.get('array').int_value
 
-		for i in range(array_count):
+		for _ in range(array_count):
 			value_addr = read_u64(array_ptr)
 			print(' '*(level + 1))
 			iokit_print(value_addr, level=level+1)
@@ -1389,14 +1436,14 @@ def iokit_print(object_address : int, level = 0):
 		print(f'OSOrderedSet({hex(object_address)})', end='')
 
 	elif iokit_type == 'OSString' or iokit_type == 'OSSymbol':
-		string_value = iokit_object.string.GetStrValue()
+		string_value = iokit_object.get('string').str_value
 		if iokit_type == 'OSSymbol':
 			print(string_value, end='')
 		else:
 			print(f'"{string_value}"', end='')
 	
 	elif iokit_type == 'OSNumber':
-		number_value = iokit_object.value.GetIntValue()
+		number_value = iokit_object.get('value').int_value
 		print(number_value, end='')
 	
 	elif iokit_type == 'OSData':
@@ -1404,7 +1451,7 @@ def iokit_print(object_address : int, level = 0):
 		print(f'OSData({hex(object_address)})', end='')
 	
 	elif iokit_type == 'OSBoolean':
-		boolean_value = iokit_object.value.GetBoolValue()
+		boolean_value = iokit_object.get('value').int_value
 		if boolean_value:
 			print('true', end='')
 		else:
