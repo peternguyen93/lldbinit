@@ -304,7 +304,6 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 
 	# xnu zone commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_list_zone zone_list", res)
-	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_find_zones_by_name zone_find_zones_index", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zshow_logged_zone zone_show_logged_zone", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_triage zone_triage", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_inspect_zone zone_inspect", res)
@@ -314,9 +313,9 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_backtrace_at zone_backtrace_at", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_zone_reload zone_reload", res)
 
-	# xnu port commands
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ipc_task_port showtaskipc", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
+	# # xnu port commands
+	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ipc_task_port showtaskipc", res)
+	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_show_ports showports", res)
 
 	# xnu iokit commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_iokit_print iokit_print", res)
@@ -2842,24 +2841,6 @@ def cmd_xnu_list_zone(debugger: SBDebugger, command: str, result: SBCommandRetur
 	pad_size = len(str(len(XNU_ZONES)))
 	for idx, zone_name in enumerate(XNU_ZONES.iter_zone_name()):
 		print(f'- {idx:{pad_size}} | {zone_name}')
-	
-def cmd_xnu_find_zones_by_name(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	global XNU_ZONES
-	if not XNU_ZONES.is_loaded:
-		XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
-
-	# args = command.split(' ')
-	# if len(args) < 1:
-	# 	print('zone_find_zones_index <zone name>')
-	# 	return False
-
-	# zones = XNU_ZONES.findzone_by_names(args[0])
-
-	# print('[+] Zones:')
-	# pad_size = len(str(len(zones)))
-	# for i, zone in zones:
-	# 	zone_name = zone.get_attribute('zone_name')
-	# 	print(f'- {i:{pad_size}} | {zone_name}')
 
 def cmd_xnu_zshow_logged_zone(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	global XNU_ZONES
@@ -3018,53 +2999,6 @@ def cmd_xnu_zone_reload(debugger: SBDebugger, command: str, result: SBCommandRet
 	print('[+] Reload XNU_ZONES')
 	XNU_ZONES.load_from_kernel(debugger.GetSelectedTarget())
 
-# XNU MACH IPC PORT COMMANDS
-
-def cmd_xnu_show_ipc_task_port(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	'''
-	'''
-	return True
-
-def cmd_xnu_show_ports(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	args = command.split(' ')
-	if len(args) < 1:
-		print('showports <ipc_space_t address/ process name>')
-		return False
-	
-	ipc_space = None
-	proc_name = ''
-	ipc_space_addr = 0
-
-	try:
-		# parse address and convert to ipc_space_t
-		ipc_space_addr = int(args[0], 16)
-		ipc_space = ESBValue.init_with_address(ipc_space_addr, 'ipc_space *')
-	except ValueError:
-		proc_name = args[0]
-	
-	if proc_name:
-		proc_val = xnu_find_process_by_name(proc_name)
-		if not proc_val:
-			print(f'[!] Your process {proc_name} does not found.')
-			return False
-		
-		task_val = get_ipc_task(proc_val)
-		ipc_space = task_val.get('itk_space')
-	
-	if ipc_space == None:
-		print('[!] Unable to find itk_space for given ', end = '')
-		if ipc_space_addr:
-			print('space ipc address:', hex(ipc_space_addr))
-		elif proc_name:
-			print('process name:', proc_name)
-		else:
-			print('Unknow')
-
-		return False
-	
-	print_ipc_information(ipc_space)
-	return True
-
 # -------------------------------------------------------
 
 def cmd_addkext(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -3150,15 +3084,17 @@ def cmd_xnu_find_process_by_name(debugger: SBDebugger, command: str, result: SBC
 		return
 
 	proc_name = args[0]
-	xnu_proc = xnu_find_process_by_name(proc_name)
-	if xnu_proc == None:
+	proc = xnu_find_process_by_name(proc_name)
+	if proc == None:
 		print(f'[!] Couldn\'t found your process {proc_name}')
 		return
 
-	proc_name = xnu_proc.get('p_name').str_value
-	p_pid = xnu_proc.get('p_pid').int_value
+	p_name = proc.get('p_name').str_value
+	p_pid = proc.get('p_pid').int_value
+	task = get_ipc_task(proc)
 
-	print(f'+ {p_pid} - {proc_name} - {xnu_proc.value}')
+	print(f'+ {"PID":<5} | {"Proc Name":<40} | {"Proc Address":<20} | {"Task Address":<20}')
+	print(f'+ {p_pid:<5} | {p_name:<40} | {proc.int_value:#20x} | {task.int_value:#20x}')
 
 def cmd_xnu_read_usr_addr(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
@@ -3178,7 +3114,7 @@ def cmd_xnu_read_usr_addr(debugger: SBDebugger, command: str, result: SBCommandR
 	except (TypeError, ValueError):
 		size = 0x20
 
-	raw_data = xnu_read_user_address(debugger.GetSelectedTarget(), proc.get('task'), user_space_addr, size)
+	raw_data = xnu_read_user_address(proc.get('task'), user_space_addr, size)
 	print(hexdump(user_space_addr, raw_data, " ", 16))
 
 def cmd_xnu_set_kdp_pmap(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):

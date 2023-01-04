@@ -829,7 +829,7 @@ class ESBValue(object):
 		'''
 
 		if '.' in attr_name:
-			attr_names = attr_name.split('')
+			attr_names = attr_name.split('.')
 		else:
 			attr_names = [attr_name]
 		
@@ -842,6 +842,16 @@ class ESBValue(object):
 				raise ESBValueException(f'member attribute {attr_name} didn\'t exists.')
 			
 		return ESBValue.init_with_SBValue(sb_value)
+	
+	def has_member(self: Self, attr_name: str) -> bool:
+		'''
+			check attr_name exists or not
+		'''
+		try:
+			self.get(attr_name)
+			return True
+		except ESBValueException:
+			return False
 
 	def addr_of(self: Self) -> int:
 		'''
@@ -1081,7 +1091,7 @@ def get_connection_protocol() -> str:
 
 	return retval
 
-def address_of(target: SBTarget, sb_value: SBValue):
+def address_of(target: SBTarget, sb_value: SBValue) -> int:
 	try:
 		sb_address: SBAddress = sb_value.GetAddress()
 		if sb_address.IsValid():
@@ -1119,17 +1129,21 @@ def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
 		out goal to resolve symbol for this address
 	'''
 
-	instructions = target.ReadInstructions(SBAddress(target_address, target), 3, 'intel')
+	instructions: SBInstructionList = target.ReadInstructions(SBAddress(target_address, target), 3, 'intel')
 	if instructions.GetSize() == 0:
 		return 0
 	
-	if instructions[0].GetMnemonic(target) != 'adrp' or instructions[1].GetMnemonic(target) != 'add' or \
-		(instructions[2].GetMnemonic(target) != 'br' and instructions[2].GetOperands(target).startswith('x')):
+	instruction_0: SBInstruction = instructions.GetInstructionAtIndex(0)
+	instruction_1: SBInstruction = instructions.GetInstructionAtIndex(1)
+	instruction_2: SBInstruction = instructions.GetInstructionAtIndex(2)
+
+	if instruction_0.GetMnemonic(target) != 'adrp' or instruction_1.GetMnemonic(target) != 'add' or \
+		(instruction_2.GetMnemonic(target) != 'br' and instruction_2.GetOperands(target).startswith('x')):
 		return 0
 	
-	page_shift = int(instructions[0].GetOperands(target).split(',')[1])
+	page_shift = int(instruction_0.GetOperands(target).split(',')[1])
 	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
-	call_offset = int(instructions[1].GetOperands(target).split(',')[2].strip(' #'), 16)
+	call_offset = int(instruction_1.GetOperands(target).split(',')[2].strip(' #'), 16)
 	call_func_ptr = target_page + call_offset 
 
 	return call_func_ptr

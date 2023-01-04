@@ -115,7 +115,7 @@ def xnu_reset_kdp_pmap() -> bool:
 
 	return True
 
-def xnu_read_user_address(target: SBTarget, task: ESBValue, address: int, size: int) -> bytes:
+def xnu_read_user_address(task: ESBValue, address: int, size: int) -> bytes:
 	out = ''
 
 	if get_connection_protocol() != 'kdp':
@@ -133,7 +133,7 @@ def xnu_read_user_address(target: SBTarget, task: ESBValue, address: int, size: 
 
 	return out
 
-def xnu_write_user_address(target: SBTarget, task: ESBValue, address: int, value: int) -> bool:
+def xnu_write_user_address(task: ESBValue, address: int, value: int) -> bool:
 	if get_connection_protocol() != 'kdp':
 		print('[!] xnu_read_user_address() only works on kdp-remote')
 		return False
@@ -168,7 +168,7 @@ def xnu_find_process_by_name(proc_name: str) -> Optional[ESBValue]:
 
 		allproc_ptr = allproc_ptr.get('p_list').get('le_next')
 
-	return match_proc
+	return match_proc	
 
 def xnu_list_all_process():
 	try:
@@ -177,14 +177,16 @@ def xnu_list_all_process():
 		print('Unable to find "allproc" symbol in this kernel')
 		return None
 
-	allproc_ptr = allproc.get('lh_first')
+	pproc = allproc.get('lh_first')
+	
+	print(f'+ {"PID":<5} | {"Proc Name":<40} | {"Proc Address":<20} | {"Task Address":<20}')
+	while not pproc.is_null:
+		p_name = pproc.get('p_name').str_value
+		p_pid = pproc.get('p_pid').int_value
+		task = get_ipc_task(pproc)
+		print(f'+ {p_pid:<5} | {p_name:<40} | {pproc.int_value:#20x} | {task.int_value:#20x}')
 
-	while not allproc_ptr.is_null:
-		p_name = allproc_ptr.get('p_name').str_value
-		p_pid = allproc_ptr.get('p_pid').int_value
-		print(f'+ {p_pid} - {p_name} - {hex(allproc_ptr.int_value)}')
-
-		allproc_ptr = allproc_ptr.get('p_list').get('le_next')
+		pproc = pproc.get('p_list').get('le_next')
 
 def xnu_showbootargs() -> str:
 	try:
@@ -263,7 +265,12 @@ def get_ipc_space_table(ipc_space: ESBValue) -> Tuple[ESBValue, int]:
 		return (table, ipc_space.get('is_table_size').int_value)
 
 def get_ipc_task(proc: ESBValue) -> ESBValue:
-	return proc.get('task').cast_to('task *')
+	if proc.has_member('task'):
+		return proc.get('task').cast_to('task *')
+	
+	proc_struct_size = ESBValue('proc_struct_size').int_value
+	task = ESBValue.init_with_address(proc.int_value + proc_struct_size, 'task *')
+	return task
 
 def get_proc_from_task(task: ESBValue) -> ESBValue:
 	return task.get('bsd_info').cast_to('proc *')
@@ -391,7 +398,7 @@ def get_port_destination_summary(port: ESBValue) -> str:
 	out_str += "{0: <20s} {1: <20s}".format(destname_str, destination_str)
 	return out_str
 
-def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
+def get_ipc_entry_summary(entry: ESBValue, ipc_name: int = 0, rights_filter: str = ''):
 	""" 
 		Borrow from XNU source
 		Get summary of a ipc entry.
@@ -445,9 +452,9 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 		if not wqset_q.is_valid:
 			wqset_q = psetval.get('ips_messages.data.pset.setq.wqset_q')
 		
-		set_str = get_waitq_sets(wqset_q)
+		# set_str = get_waitq_sets(wqset_q)
 
-		ipc_entry_info['nsets'] = len(set_str)
+		# ipc_entry_info['nsets'] = len(set_str)
 		ipc_entry_info['nmsgs'] = 0
 	else:
 		if ie_bits & 0x00010000:
@@ -484,24 +491,30 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 				if soright_ptr & 0x2:
 					ipc_entry_info['right'] += 'r'
 		
+		if portval.has_member('ip_kobject_nsrequest'):
+			no_sender_request = portval.get('ip_kobject_nsrequest').int_value
+		
+		else:
+			no_sender_request = portval.get('ip_nsrequest').int_value
+
 		# No-senders notification requested
-		if portval.get('ip_nsrequest').int_value != 0 or portval.get('ip_kobject_nsrequest').int_value:
+		if no_sender_request:
 			ipc_entry_info['right'] += 'n'
 		
 		# port-destroy notification requested
-		if portval.get('ip_pdrequest').int_value != 0:
+		if portval.get('ip_pdrequest').int_value:
 			ipc_entry_info['right'] += 'x'
 		
 		# Immovable receive rights
-		if portval.get('ip_immovable_receive').int_value != 0:
+		if portval.get('ip_immovable_receive').int_value:
 			ipc_entry_info['right'] += 'i'
 		
 		# Immovable send rights
-		if portval.get('ip_immovable_send').int_value != 0:
+		if portval.get('ip_immovable_send').int_value:
 			ipc_entry_info['right'] += 'm'
 
 		# No-grant Port
-		if portval.get('ip_no_grant').int_value != 0:
+		if portval.get('ip_no_grant').int_value:
 			ipc_entry_info['right'] += 'g'
 
 		# Port with SB filtering on
@@ -516,14 +529,15 @@ def get_ipc_entry_summary(entry : ESBValue, ipc_name = 0, rights_filter = ''):
 		ipc_entry_info['destname'] = get_port_destination_summary(ie_object.cast_to('ipc_port_t'))
 
 		# Get the number of sets to which this port belongs
-		set_str = get_waitq_sets(portval.get('ip_waitq'))
-		ipc_entry_info['nsets'] = len(set_str)
+		# ip_waitq = portval.get('ip_waitq')
+		# set_str = get_waitq_sets(ip_waitq)
+		# ipc_entry_info['nsets'] = len(set_str)
 		ipc_entry_info['nmsgs'] = portval.get('ip_messages.imq_msgcount').int_value
 
 	if rights_filter == '' or rights_filter == ipc_entry_info['right']:
 		return ipc_entry_info
 	
-	return None
+	return ipc_entry_info
 
 def print_ipc_information(ipc_space: ESBValue):
 	entry_table, num_entries = get_ipc_space_table(ipc_space)
@@ -532,7 +546,6 @@ def print_ipc_information(ipc_space: ESBValue):
 		return
 
 	entry_table_address = entry_table.int_value
-
 	print("{0: <20s} {1: <20s} {2: <20s} {3: <8s} {4: <10s} {5: <18s} {6: >8s} {7: <8s}".format(
 		'ipc_space', 'is_task', 'is_table', 'flags', 'ports', 'table_next', 'low_mod', 'high_mod'
 	))
@@ -1276,24 +1289,7 @@ class XNUZones:
 		zone = self.zones_access_cache[zone_name]
 		return self.get_chunk_info_at_zone(zone, chunk_addr)
 	
-	def get_info_chunks_at_range(self: Self, from_zone_idx: int, to_zone_idx: int, chunk_addr: int):
-		# assert (from_zone_idx >=0 and to_zone_idx < len(self)) and (from_zone_idx < to_zone_idx), \
-		# 				'from_zone_idx or to_zone_idx is out of bound'
-
-		# for i in range(from_zone_idx, to_zone_idx):
-		# 	zone = self[i]
-		# 	ret = self.get_chunk_info_at_zone(i, chunk_addr)
-		# 	if ret != 'None':
-		# 		info = {
-		# 			'zone_name': zone.get_attribute('zone_name'),
-		# 			'zone_idx': i,
-		# 			'status': ret 
-		# 		}
-		# 		return info
-		
-		return None
-	
-	def find_chunk_info(self, chunk_addr : int):
+	def find_chunk_info(self: Self, chunk_addr: int):
 		'''
 			Walk through the hold zone in zone_array, this method could take time
 		'''
