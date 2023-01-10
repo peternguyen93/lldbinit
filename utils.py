@@ -186,37 +186,46 @@ def get_c_array_addr(value: SBValue) -> int:
 	return 0
 
 def evaluate(command: str) -> int:
+	'''
+		Trying to parse command in str format into address
+		Assume type of command are:
+		- LLDB command -> execute this command and try to get int value
+		- Variable name -> this variable hold address of not ??
+		                -> if not get address of this variable (&var)
+		- hex string -> convert to int
+		- int string -> convert to int
+	'''
+
+	# assume command is lldb command
 	frame = get_frame()
 	if frame:
-		value: SBValue = frame.EvaluateExpression(command)
-		if not value.IsValid():
-			return 0
-		
-		if value.GetValue() == None:
-			addr = get_c_array_addr(value)
-			if addr:
-				return addr
-
-			return try_convert_str_to_int(command)
-		
-		return try_convert_str_to_int(value.GetValue())
-	# use the target version - if no target exists we can't do anything about it
+		command_value: SBValue = frame.EvaluateExpression(command)
 	else:
 		target = get_target()
-		if target == None:
-			return 0
-		value = target.EvaluateExpression(command)
-		if not value.IsValid():
-			return 0
-		
-		if value.GetValue() == None:
-			addr = get_c_array_addr(value)
-			if addr:
-				return addr
+		command_value: SBValue = target.EvaluateExpression(command)
+	
+	if command_value.IsValid():
+		# we have command_value output, try to get value
+		cmd_value = command_value.GetValue()
+		if cmd_value != None:
+			return try_convert_str_to_int(cmd_value)
 
+	# assume command is variable
+	try:
+		some_var = ESBValue(command)
+		if not some_var.is_valid:
+			# this command is not variable name, try to convert to int
 			return try_convert_str_to_int(command)
 		
-		return try_convert_str_to_int(value.GetValue())
+		if some_var.value == None:
+			# this variable name doesn't hold address, get address of this some_var instead
+			return some_var.addr_of()
+
+		return some_var.int_value
+
+	except ESBValueException:
+		# this command is not variable name, try to convert to int
+		return try_convert_str_to_int(command)
 
 def is_i386() -> bool:
 	arch = get_arch()
@@ -542,6 +551,13 @@ def read_mem(addr: int, size: int) -> bytes:
 		mem_data = b''
 
 	return mem_data
+
+def readable(addr: int) -> bool:
+	try:
+		mem = read_mem(addr, 1)
+	except LLDBMemoryException:
+		return False
+	return True if len(mem) == 1 else False
 
 def read_pointer(addr: int) -> int:
 	pointer_size = get_pointer_size()
@@ -890,6 +906,9 @@ class ESBValue(object):
 		''' extract content of sb_value in integer '''
 		content = self.value
 		type_name = self.value_type
+
+		if content == None:
+			return 0
 
 		if type_name.startswith('uint8_t') or type_name.startswith('int8_t') or \
 				type_name.startswith('char'):

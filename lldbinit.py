@@ -973,14 +973,13 @@ Note: expressions supported, do not use spaces between operators.
 
 	if bytes_read[0] == 0xCC:
 		#print("Found byte patched byte at 0x{:x}".format(int3_addr))
+		
 		try:
 			original_byte = Int3Dictionary[int3_addr]
 		except:
 			print("[-] error: Original byte for address 0x{:x} not found.".format(int3_addr))
 			return
-		patch_bytes = chr(original_byte)
-		# result = target.GetProcess().WriteMemory(int3_addr, patch_bytes, error)
-		# if error.Success() == False:
+
 		if write_mem(int3_addr, bytearray([original_byte])) == 0:
 			print("[-] error: Failed to write memory at 0x{:x}.".format(int3_addr))
 			return
@@ -1813,6 +1812,7 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	cur_target: SBTarget = debugger.GetSelectedTarget()
 	pointer_size = get_pointer_size()
 
+	print(hex(address), length, pointer_size)
 	memory = read_mem(address, length * pointer_size)
 	if len(memory):
 		# print telescope memory
@@ -1845,8 +1845,8 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 								COLORS['BOLD'], module_name, hex(module_map.abs_offset), COLORS['RESET']
 							))
 				else:
-					if len(read_mem(ptr_value, 1)):
-						# check this address is on heap or stack or mapped address
+					if readable(ptr_value):
+						# check this readable address is on heap or stack or mapped address
 						map_info = MACOS_VMMAP.query_vmmap(ptr_value)
 						if map_info == None:
 							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
@@ -3297,11 +3297,8 @@ def display_stack():
 	stack_addr = get_current_sp()
 	if stack_addr == 0:
 		return
-	err = SBError()
-	membuff = get_process().ReadMemory(stack_addr, 0x100, err)
-	if err.Success() == False:
-		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
-		return
+
+	membuff = read_mem(stack_addr, 0x100)
 	if len(membuff) == 0:
 		print("[-] error: not enough bytes read.")
 		return
@@ -3313,11 +3310,8 @@ def display_data():
 	data_addr = DATA_WINDOW_ADDRESS
 	if data_addr == 0:
 		return
-	err = SBError()
-	membuff = get_process().ReadMemory(data_addr, 0x100, err)
-	if err.Success() == False:
-		print("[-] error: Failed to read memory at 0x{:x}.".format(data_addr))
-		return
+
+	membuff = read_mem(data_addr, 0x100)
 	if len(membuff) == 0:
 		print("[-] error: not enough bytes read.")
 		return
