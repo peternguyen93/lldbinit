@@ -962,9 +962,6 @@ Note: expressions supported, do not use spaces between operators.
 		print("[-] error: No INT3 patched addresses to restore available.")
 		return
 	
-	target = get_target()
-
-	# bytes_string = target.GetProcess().ReadMemory(int3_addr, 1, error)
 	bytes_string = read_mem(int3_addr, 1)
 	if not len(bytes_string):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(int3_addr))
@@ -1062,11 +1059,7 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	# error = SBError()
-	# target = get_target()
-
 	current_patch_addr = nop_addr
-	# format for WriteMemory()
 	patch_byte = b'\x90'
 	# can we do better here? WriteMemory takes an input string... weird
 	for _ in range(patch_size):
@@ -1483,7 +1476,7 @@ Note: expressions supported, do not use spaces between operators.
 	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
-	if POINTER_SIZE == 4: #is_i386() or is_arm():
+	if POINTER_SIZE == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
 		output("----------------------------------------")
 	else: #is_x64():
@@ -1496,9 +1489,9 @@ Note: expressions supported, do not use spaces between operators.
 	index = 0
 	while index < 0x100:
 		(mem0, mem1, mem2, mem3) = struct.unpack("IIII", membuff[index:index+0x10])
-		if POINTER_SIZE == 4: #is_i386() or is_arm():
+		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
-		else:  #is_x64():
+		else:
 			szaddr = "0x%.016lX" % dump_addr
 		output("\033[1m%s :\033[0m %.08X %.08X %.08X %.08X \033[1m%s\033[0m" % (szaddr, 
 											mem0, 
@@ -3336,8 +3329,7 @@ def get_rip_relative_addr(source_address: int) -> int:
 	elif inst_size == 5:
 		data = int.from_bytes(offset_bytes, byteorder='little')
 		
-	rip_call_addr = source_address + inst_size + data#[0]
-	#output("source {:x} rip call offset {:x} {:x}\n".format(source_address, data[0], rip_call_addr))
+	rip_call_addr = source_address + inst_size + data
 	return rip_call_addr
 
 # XXX: instead of reading memory we can dereference right away in the evaluation
@@ -3547,15 +3539,13 @@ def get_objectivec_selector_at(call_addr: int) -> str:
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
 
-	classname_command = '(const char *)object_getClassName((id){})'.format(get_instance_object())
-	classname: SBValue = get_frame().EvaluateExpression(classname_command)
-	if classname.IsValid() == False:
+	classname_command = f'(const char *)object_getClassName((id){get_instance_object()})'
+	expr = ESBValue.init_with_expression(classname_command)
+	if not expr.is_valid:
 		return ''
-		
-	classname_summary: str = classname.GetSummary()
-	if classname_summary:
-		class_name = classname_summary.strip('"')
-
+	
+	class_name = expr.str_value
+	if class_name:
 		if symbol_name.startswith("objc_msgSend"):
 			if is_x64():
 				selector_addr = get_gp_register("rsi")

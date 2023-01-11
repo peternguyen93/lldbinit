@@ -748,6 +748,7 @@ class ESBValue(object):
 
 	sb_var_name: str
 	sb_value: SBValue
+	is_expression: bool
 	# store metadata for ESBValue
 	sb_attributes: Dict[str, Any]
 
@@ -756,6 +757,7 @@ class ESBValue(object):
 		self.sb_var_name = ''
 		# store metadata
 		self.sb_attributes = {}
+		self.is_expression = False
 
 		if var_name == 'classcall':
 			# skip initialize for classcall
@@ -806,7 +808,7 @@ class ESBValue(object):
 		
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = exp_sbvalue
-		new_esbvalue.sb_var_name = 'expression'
+		new_esbvalue.is_expression = True
 		return new_esbvalue
 	
 	@classmethod
@@ -907,6 +909,10 @@ class ESBValue(object):
 	
 	@property
 	def str_value(self: Self, max_length: int = 1024) -> str:
+		if self.is_expression:
+			summary:str = self.sb_value.GetSummary()
+			return summary.strip('"')
+
 		return read_cstr(self.addr_of(), max_length).decode('utf-8')
 	
 	@property
@@ -920,14 +926,15 @@ class ESBValue(object):
 	def var_type_name(self: Self) -> str:
 		return self.sb_value.GetTypeName()
 	
+	@property
+	def summary(self: Self) -> str:
+		return self.sb_value.GetSummary()
+	
 	def dereference(self: Self) -> 'ESBValue':
 		'''
 			dereference a pointer
 		'''
 		return ESBValue.init_with_SBValue(self.sb_value.Dereference())
-
-	def summary(self: Self) -> str:
-		return self.sb_value.GetSummary()
 	
 	def get_SBAddress(self: Self) -> SBAddress:
 		return self.sb_value.GetAddress()
