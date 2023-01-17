@@ -100,6 +100,7 @@ CONFIG_LOG_LEVEL = "LOG_NONE"
 # reference: https://lldb.llvm.org/formats.html
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
 DATA_WINDOW_ADDRESS = 0
+POINTER_SIZE = 8 # assume architecture is 64 bits
 
 old_register: Dict[str, int] = {}
 
@@ -961,9 +962,6 @@ Note: expressions supported, do not use spaces between operators.
 		print("[-] error: No INT3 patched addresses to restore available.")
 		return
 	
-	target = get_target()
-
-	# bytes_string = target.GetProcess().ReadMemory(int3_addr, 1, error)
 	bytes_string = read_mem(int3_addr, 1)
 	if not len(bytes_string):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(int3_addr))
@@ -973,14 +971,13 @@ Note: expressions supported, do not use spaces between operators.
 
 	if bytes_read[0] == 0xCC:
 		#print("Found byte patched byte at 0x{:x}".format(int3_addr))
+		
 		try:
 			original_byte = Int3Dictionary[int3_addr]
 		except:
 			print("[-] error: Original byte for address 0x{:x} not found.".format(int3_addr))
 			return
-		patch_bytes = chr(original_byte)
-		# result = target.GetProcess().WriteMemory(int3_addr, patch_bytes, error)
-		# if error.Success() == False:
+
 		if write_mem(int3_addr, bytearray([original_byte])) == 0:
 			print("[-] error: Failed to write memory at 0x{:x}.".format(int3_addr))
 			return
@@ -1062,11 +1059,7 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 
-	# error = SBError()
-	# target = get_target()
-
 	current_patch_addr = nop_addr
-	# format for WriteMemory()
 	patch_byte = b'\x90'
 	# can we do better here? WriteMemory takes an input string... weird
 	for _ in range(patch_size):
@@ -1313,7 +1306,7 @@ Note: expressions supported, do not use spaces between operators.
 	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
-	if get_pointer_size() == 4:
+	if POINTER_SIZE == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
 		output("------------------------------------------------------")
 	else:
@@ -1327,7 +1320,7 @@ Note: expressions supported, do not use spaces between operators.
 	index = 0
 	while index < 0x100:
 		data = struct.unpack(b"B"*16, membuff[index:index+0x10])
-		if get_pointer_size() == 4:
+		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
 			szaddr = "0x%.016lX" % dump_addr
@@ -1405,7 +1398,7 @@ Note: expressions supported, do not use spaces between operators.
 	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
-	if get_pointer_size() == 4: #is_i386() or is_arm():
+	if POINTER_SIZE == 4: #is_i386() or is_arm():
 		output("[0x0000:0x%.08X]" % dump_addr)
 		output("--------------------------------------------")
 	else: #is_x64():
@@ -1418,7 +1411,7 @@ Note: expressions supported, do not use spaces between operators.
 	index = 0
 	while index < 0x100:
 		data = struct.unpack("HHHHHHHH", membuff[index:index+0x10])
-		if get_pointer_size() == 4:
+		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
 			szaddr = "0x%.016lX" % dump_addr
@@ -1483,7 +1476,7 @@ Note: expressions supported, do not use spaces between operators.
 	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
-	if get_pointer_size() == 4: #is_i386() or is_arm():
+	if POINTER_SIZE == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
 		output("----------------------------------------")
 	else: #is_x64():
@@ -1496,9 +1489,9 @@ Note: expressions supported, do not use spaces between operators.
 	index = 0
 	while index < 0x100:
 		(mem0, mem1, mem2, mem3) = struct.unpack("IIII", membuff[index:index+0x10])
-		if get_pointer_size() == 4: #is_i386() or is_arm():
+		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
-		else:  #is_x64():
+		else:
 			szaddr = "0x%.016lX" % dump_addr
 		output("\033[1m%s :\033[0m %.08X %.08X %.08X %.08X \033[1m%s\033[0m" % (szaddr, 
 											mem0, 
@@ -1558,7 +1551,7 @@ Note: expressions supported, do not use spaces between operators.
 	membuff = membuff.ljust(0x100, b'\x00')
 
 	color("BLUE")
-	if get_pointer_size() == 4:
+	if POINTER_SIZE == 4:
 		output("[0x0000:0x%.08X]" % dump_addr)
 		output("-------------------------------------------------------")
 	else:
@@ -1571,7 +1564,7 @@ Note: expressions supported, do not use spaces between operators.
 	index = 0
 	while index < 0x100:
 		(mem0, mem1, mem2, mem3) = struct.unpack("QQQQ", membuff[index:index+0x20])
-		if get_pointer_size() == 4:
+		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
 			szaddr = "0x%.016lX" % dump_addr
@@ -1696,7 +1689,7 @@ def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObjec
 	
 			GlobalListOutput = []
 			
-			if get_pointer_size() == 4:
+			if POINTER_SIZE == 4:
 				ptrformat = "%.08X"
 			else:
 				ptrformat = "%.016lX"
@@ -1714,7 +1707,7 @@ def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObjec
 				base_displayed = 1
 			else:
 				output("        ")
-				if get_pointer_size() == 4:
+				if POINTER_SIZE == 4:
 					output(" " * 8)
 				else:
 					output(" " * 16)
@@ -1811,8 +1804,9 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	print(COLORS['MAGENTA'] + 'DATA' + COLORS['RESET'])
 
 	cur_target: SBTarget = debugger.GetSelectedTarget()
-	pointer_size = get_pointer_size()
+	pointer_size = POINTER_SIZE
 
+	print(hex(address), length, pointer_size)
 	memory = read_mem(address, length * pointer_size)
 	if len(memory):
 		# print telescope memory
@@ -1845,8 +1839,8 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 								COLORS['BOLD'], module_name, hex(module_map.abs_offset), COLORS['RESET']
 							))
 				else:
-					if len(read_mem(ptr_value, 1)):
-						# check this address is on heap or stack or mapped address
+					if readable(ptr_value):
+						# check this readable address is on heap or stack or mapped address
 						map_info = MACOS_VMMAP.query_vmmap(ptr_value)
 						if map_info == None:
 							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
@@ -1882,7 +1876,7 @@ def display_map_info(map_info: MapInfo):
 	
 	print(map_info.map_type + ' [', end='')
 
-	if get_pointer_size() == 4:
+	if POINTER_SIZE == 4:
 		print("0x%.08X - 0x%.08X" % (map_info.start, map_info.end), end='')
 	else:
 		print("0x%.016lX - 0x%.016lX" % (map_info.start, map_info.end), end='')
@@ -2270,6 +2264,8 @@ def get_inst_size(target_addr: int) -> int:
 # the disassembler we use on stop context
 # we can customize output here instead of using the cmdline as before and grabbing its output
 def disassemble(start_address: int, count: int):
+	global ARM64E_STACK
+
 	target = get_target()
 
 	# this init will set a file_addr instead of expected load_addr
@@ -2305,12 +2301,7 @@ def disassemble(start_address: int, count: int):
 	# so we can have a uniform output
 	max_size = 0
 	max_mnem_size = 0
-	# for i in instructions_mem:
-	# 	if i.size > max_size:
-	# 		max_size = i.size
-	# 	mnem_len = len(i.mnemonic)
-	# 	if mnem_len > max_mnem_size:
-	# 		max_mnem_size = mnem_len
+
 	for instr in instructions_file:
 		instr: SBInstruction = instr
 		if instr.size > max_size:
@@ -2324,7 +2315,7 @@ def disassemble(start_address: int, count: int):
 	# get info about module if there is a symbol
 	module: SBModule = file_sbaddr.module
 	#module_name = module.file.GetFilename()
-	module_name = module.file.fullpath
+	module_name: str = module.file.fullpath
 
 	count = 0
 	blockstart_sbaddr = None
@@ -2360,7 +2351,6 @@ def disassemble(start_address: int, count: int):
 			if blockend_sbaddr:
 				blockend_addr = blockend_sbaddr.GetLoadAddress(target)
 
-			# if not blockstart_sbaddr or (int(file_inst.addr) < int(blockstart_sbaddr)) or (int(file_inst.addr) >= int(blockend_sbaddr)):
 			if not blockstart_addr or (cur_load_addr < blockstart_addr) \
 																or (cur_load_addr >= blockend_addr):
 				if CONFIG_ENABLE_COLOR == 1:
@@ -2375,9 +2365,9 @@ def disassemble(start_address: int, count: int):
 		# get the instruction bytes formatted as uint8
 		inst_data = mem_inst.GetData(target).uint8
 		# mnem = mem_inst.mnemonic
-		mnem = mem_inst.GetMnemonic(target)
+		mnem: str = mem_inst.GetMnemonic(target)
 		# operands = mem_inst.operands
-		operands = mem_inst.GetOperands(target)
+		operands: str = mem_inst.GetOperands(target)
 		bytes_string = ""
 		total_fill = max_size - mem_inst.size
 		total_spaces = mem_inst.size - 1
@@ -2448,12 +2438,13 @@ def disassemble(start_address: int, count: int):
 						# remove space for instructions without operands
 						# if mem_inst.operands == "":
 						if mem_inst.GetOperands(target):
-							comment = "; " + symbol_info + hex(flow_addr) + " @ " + flow_module_name
+							comment = f'; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
 						else:
-							comment = " ; " + symbol_info + hex(flow_addr) + " @ " + flow_module_name
+							comment = f' ; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
 					else:
-						comment = comment + " " + hex(flow_addr) + " @ " + flow_module_name
+						comment+= f' {hex(flow_addr)} @ {flow_module_name}'
 				
+				# handle objective C call
 				objc = ''
 				if dyld_call_addr:
 					objc = get_objectivec_selector_at(dyld_call_addr)
@@ -2461,7 +2452,7 @@ def disassemble(start_address: int, count: int):
 					objc = get_objectivec_selector(current_pc)
 				
 				if objc != "":
-					comment = comment + " -> " + objc
+					comment+= f' -> {objc}'
 
 			if CONFIG_ENABLE_COLOR == 1:
 				color("BOLD")
@@ -3297,11 +3288,8 @@ def display_stack():
 	stack_addr = get_current_sp()
 	if stack_addr == 0:
 		return
-	err = SBError()
-	membuff = get_process().ReadMemory(stack_addr, 0x100, err)
-	if err.Success() == False:
-		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
-		return
+
+	membuff = read_mem(stack_addr, 0x100)
 	if len(membuff) == 0:
 		print("[-] error: not enough bytes read.")
 		return
@@ -3313,11 +3301,8 @@ def display_data():
 	data_addr = DATA_WINDOW_ADDRESS
 	if data_addr == 0:
 		return
-	err = SBError()
-	membuff = get_process().ReadMemory(data_addr, 0x100, err)
-	if err.Success() == False:
-		print("[-] error: Failed to read memory at 0x{:x}.".format(data_addr))
-		return
+
+	membuff = read_mem(data_addr, 0x100)
 	if len(membuff) == 0:
 		print("[-] error: not enough bytes read.")
 		return
@@ -3325,7 +3310,7 @@ def display_data():
 	output(hexdump(data_addr, membuff, " ", 16, 4))
 
 # workaround for lldb bug regarding RIP addressing outside main executable
-def get_rip_relative_addr(source_address):
+def get_rip_relative_addr(source_address: int) -> int:
 	inst_size = get_inst_size(source_address)
 	if inst_size <= 1:
 		print("[-] error: instruction size too small.")
@@ -3344,15 +3329,12 @@ def get_rip_relative_addr(source_address):
 	elif inst_size == 5:
 		data = int.from_bytes(offset_bytes, byteorder='little')
 		
-	rip_call_addr = source_address + inst_size + data#[0]
-	#output("source {:x} rip call offset {:x} {:x}\n".format(source_address, data[0], rip_call_addr))
+	rip_call_addr = source_address + inst_size + data
 	return rip_call_addr
 
 # XXX: instead of reading memory we can dereference right away in the evaluation
 def get_indirect_flow_target(source_address: int) -> int:
-	err = SBError()
-	operand = get_operands(source_address)
-	operand = operand.lower()
+	operand = get_operands(source_address).lower()
 	mnemonic = get_mnemonic(source_address)
 
 	if mnemonic == 'tbz':
@@ -3368,43 +3350,39 @@ def get_indirect_flow_target(source_address: int) -> int:
 			x = re.search(r'\[([a-z0-9]{2,3} \+ 0x[0-9a-z]+)\]', operand)
 			if x == None:
 				return 0
-			value: SBValue = get_frame().EvaluateExpression("$" + x.group(1))
-			if value.IsValid() == False:
-				return 0
-			deref_addr = int(value.GetValue(), 10)
+
+			value = ESBValue.init_with_expression(f'${x.group(1)}')
+			deref_addr = value.int_value
 			if "rip" in operand:
 				deref_addr = deref_addr + get_inst_size(source_address)
 		else:
 			x = re.search(r'\[([a-z0-9]{2,3})\]', operand)
 			if x == None:
 				return 0
-			value = get_frame().EvaluateExpression("$" + x.group(1))
-			if value.IsValid() == False:
-				return 0
-			deref_addr = int(value.GetValue(), 10)
+				
+			value = ESBValue.init_with_expression(f'${x.group(1)}')
+			deref_addr = value.int_value
+		
 		# now we can dereference and find the call target
-		if get_pointer_size() == 4:
-			call_target_addr = get_process().ReadUnsignedFromMemory(deref_addr, 4, err)
-			return call_target_addr
-		elif get_pointer_size() == 8:
-			call_target_addr = get_process().ReadUnsignedFromMemory(deref_addr, 8, err)
-			return call_target_addr
-		if err.Success() == False:
-			return 0
-		return 0        
+		return read_pointer_from(deref_addr, POINTER_SIZE)
+
 	# calls into a register included x86_64 and aarch64
 	elif operand.startswith('r') or operand.startswith('e') or operand.startswith('x') or \
 			operand in ('lr', 'sp', 'fp'):
-		#output("register call\n")
-		# x = re.search('([a-z0-9]{2,3})', operand)
-		# if x == None:
-		# 	return 0
+		'''
+			Handle those instructions:
+			- call [x64 register] (begin with "r")
+			- call [x86 register] (begin with "e")
+			- bl/b [arm64 register] (begin with "x")
+		'''
 
-		#output("Result {}\n".format(x.group(1)))
-		value = get_frame().EvaluateExpression("$" + operand)
-		if value.IsValid() == False:
-			return 0
-		return int(value.GetValue(), 10)
+		if mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
+			# handle branch with link register with pointer authentication
+			operand = operand.split(',')[0].strip(' ')
+
+		operand_value = ESBValue.init_with_expression(f'${operand}')
+		return operand_value.int_value
+
 	# RIP relative calls
 	elif operand.startswith('0x'):
 		#output("direct call\n")
@@ -3414,16 +3392,20 @@ def get_indirect_flow_target(source_address: int) -> int:
 		if x != None:
 			#output("Result {}\n".format(x.group(0)))
 			return int(x.group(1), 16)
+	
 	return 0
 
 def get_ret_address() -> int:
+	if is_aarch64():
+		return get_gp_register('lr')
+
 	stack_addr = get_current_sp()
 	if stack_addr == 0:
 		print("[-] error: Current SP address is empty.")
 		return -1
 	
 	try:
-		ret_addr = read_pointer(stack_addr)
+		ret_addr = read_pointer_from(stack_addr, POINTER_SIZE)
 	except LLDBMemoryException:
 		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
 		return -1
@@ -3488,7 +3470,7 @@ def display_indirect_flow():
 			display_objc()
 		output("\n")
 	
-	if ("br" == mnemonic) or ("bl" == mnemonic) or ("b" == mnemonic):
+	if ('br' == mnemonic) or ('bl' == mnemonic) or ('b' == mnemonic):
 		indirect_addr = get_indirect_flow_target(pc_addr)
 		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
 
@@ -3510,25 +3492,26 @@ def get_indirect_flow_address(src_addr: int) -> int:
 	if not cur_instruction.DoesBranch():
 		return -1
 
-	mnemonic = cur_instruction.GetMnemonic(target)
+	mnemonic: str = cur_instruction.GetMnemonic(target)
 	# if "ret" in cur_instruction.mnemonic:
-	if 'ret' in mnemonic:
-		if is_aarch64():
-			ret_addr = get_gp_register('x30')
-			if ret_addr == 0:
-				ret_addr = get_gp_register('lr')
-			
-			return ret_addr
+	if mnemonic == 'ret': # ret
+		return get_ret_address()
+	
+	if mnemonic == 'retab' or mnemonic == 'retaa':
+		# decode PAC pointer
+		return strip_kernel_or_userPAC(get_ret_address())
 
-		ret_addr = get_ret_address()
-		return ret_addr
 	# if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
 	# trace both x86_64 and arm64
-	if mnemonic in ('call', 'jmp') or mnemonic in ('bl', 'br', 'b', 'blr'):
+	if mnemonic in ('call', 'jmp') or \
+		mnemonic in ('bl', 'br', 'b', 'blr') or \
+			mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
 		# don't care about RIP relative jumps
 		# if cur_instruction.operands.startswith('0x'):
-		if cur_instruction.GetOperands(target).startswith('0x'):
+		operands: str = cur_instruction.GetOperands(target)
+		if operands.startswith('0x'):
 			return -1
+		
 		indirect_addr = get_indirect_flow_target(src_addr)
 		return indirect_addr
 
@@ -3556,15 +3539,13 @@ def get_objectivec_selector_at(call_addr: int) -> str:
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
 
-	classname_command = '(const char *)object_getClassName((id){})'.format(get_instance_object())
-	classname: SBValue = get_frame().EvaluateExpression(classname_command)
-	if classname.IsValid() == False:
+	classname_command = f'(const char *)object_getClassName((id){get_instance_object()})'
+	expr = ESBValue.init_with_expression(classname_command)
+	if not expr.is_valid:
 		return ''
-		
-	classname_summary: str = classname.GetSummary()
-	if classname_summary:
-		class_name = classname_summary.strip('"')
-
+	
+	class_name = expr.str_value
+	if class_name:
 		if symbol_name.startswith("objc_msgSend"):
 			if is_x64():
 				selector_addr = get_gp_register("rsi")
@@ -3943,8 +3924,11 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	global GlobalListOutput
 	global CONFIG_DISPLAY_STACK_WINDOW
 	global CONFIG_DISPLAY_FLOW_WINDOW
+	global POINTER_SIZE
 
 	debugger.SetAsync(True)
+
+	POINTER_SIZE = get_pointer_size()
 
 	# when we start the thread is still not valid and get_frame() will always generate a warning
 	# this way we avoid displaying it in this particular case
@@ -4037,9 +4021,9 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	disassemble(get_current_pc(), CONFIG_DISASSEMBLY_LINE_COUNT)
 		
 	color(COLOR_SEPARATOR)
-	if get_pointer_size() == 4:
+	if POINTER_SIZE == 4:
 		output("---------------------------------------------------------------------------------------")
-	elif get_pointer_size() == 8:
+	elif POINTER_SIZE == 8:
 		output("-----------------------------------------------------------------------------------------------------------------------------")
 	color("RESET")
 	

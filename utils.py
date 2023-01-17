@@ -78,13 +78,7 @@ def get_color_status(addr: int) -> str:
 	elif module_map.section_name == '__DATA':
 		return "MAGENTA"
 
-	error = SBError()
-	process.ReadMemory(addr, 1, error)
-	if error.Success():
-		# memory is readable
-		return "CYAN"
-
-	return "WHITE"
+	return "WHITE" if not readable(addr) else "CYAN"
 
 # ----------------------------------------------------------
 # Functions to extract internal and process lldb information
@@ -161,15 +155,26 @@ def get_thread() -> Optional[SBThread]:
 
 	return thread
 
-def try_convert_str_to_int(num_str: str) -> int:
+def parse_number(str_num: str) -> int:
+	num = -1
+	if not str_num:
+		return -1
+
 	try:
-		return int(num_str, base=10)
+		if str_num.startswith('0x') or str_num.startswith('0X'):
+			# parse hex number
+			num = int(str_num, 16)
+		else:
+			# parse number
+			num = int(str_num)
 	except ValueError:
 		try:
-			return int(num_str, base=16)
-		except ValueError as e:
-			print("Exception on evaluate: " + str(e))
-			return 0
+			# parse hex number without prefix
+			num = int(str_num, 16)
+		except ValueError:
+			return -1
+
+	return num
 
 # evaluate an expression and return the value it represents
 def get_c_array_addr(value: SBValue) -> int:
@@ -186,37 +191,37 @@ def get_c_array_addr(value: SBValue) -> int:
 	return 0
 
 def evaluate(command: str) -> int:
-	frame = get_frame()
-	if frame:
-		value: SBValue = frame.EvaluateExpression(command)
-		if not value.IsValid():
-			return 0
-		
-		if value.GetValue() == None:
-			addr = get_c_array_addr(value)
-			if addr:
-				return addr
+	'''
+		Trying to parse command in str format into address
+		Assume type of command are:
+		- LLDB command -> execute this command and try to get int value
+		- Variable name -> this variable hold address of not ??
+		                -> if not get address of this variable (&var)
+		- hex string -> convert to int
+		- int string -> convert to int
+	'''
 
-			return try_convert_str_to_int(command)
-		
-		return try_convert_str_to_int(value.GetValue())
-	# use the target version - if no target exists we can't do anything about it
-	else:
-		target = get_target()
-		if target == None:
-			return 0
-		value = target.EvaluateExpression(command)
-		if not value.IsValid():
-			return 0
-		
-		if value.GetValue() == None:
-			addr = get_c_array_addr(value)
-			if addr:
-				return addr
+	# assume command is lldb command
+	some_express = ESBValue.init_with_expression(command)
+	if some_express.is_valid:
+		return some_express.int_value
 
-			return try_convert_str_to_int(command)
+	# assume command is variable
+	try:
+		some_var = ESBValue(command)
+		if not some_var.is_valid:
+			# this command is not variable name, try to convert to int
+			return parse_number(command)
 		
-		return try_convert_str_to_int(value.GetValue())
+		if some_var.value == None:
+			# this variable name doesn't hold address, get address of this some_var instead
+			return some_var.addr_of()
+
+		return some_var.int_value
+
+	except ESBValueException:
+		# this command is not variable name, try to convert to int
+		return parse_number(command)
 
 def is_i386() -> bool:
 	arch = get_arch()
@@ -261,11 +266,13 @@ def get_instance_object() -> str:
 
 # return the int value of a general purpose register
 def get_gp_register(reg_name: str) -> int:
+	if reg_name.lower() == 'x30':
+		reg_name = 'lr'
+
 	regs = get_registers("general")
 	for reg in regs:
 		reg: SBValue = reg
 		if reg_name == reg.GetName():
-			#return int(reg.GetValue(), 16)
 			return reg.unsigned
 
 	return 0
@@ -327,17 +334,22 @@ def get_current_sp() -> int:
 
 def objc_get_classname(objc: str) -> str:
 	classname_command = '(const char *)object_getClassName((id){})'.format(objc)
-	try:
-		frame = get_frame()
-	except LLDBFrameNotFound:
-		return ''
-
-	classname: SBValue = frame.EvaluateExpression(classname_command)
-	if classname.IsValid() == False:
+	class_name = ESBValue.init_with_expression(classname_command)
+	if not class_name.is_valid:
 		return ''
 	
-	classname_str: str = classname.GetSummary()
-	return classname_str.strip('"')
+	return class_name.str_value
+	# try:
+	# 	frame = get_frame()
+	# except LLDBFrameNotFound:
+	# 	return ''
+
+	# classname: SBValue = frame.EvaluateExpression(classname_command)
+	# if classname.IsValid() == False:
+	# 	return ''
+	
+	# classname_str: str = classname.GetSummary()
+	# return classname_str.strip('"')
 
 def find_module_by_name(target: SBTarget, module_name: str):
 	for module in target.modules:
@@ -400,26 +412,6 @@ def resolve_mem_map(target: SBTarget, addr: int) -> ModuleInfo:
 			absolute_offset += section.GetFileByteSize()
 
 	return module_info
-
-## String operations ##
-
-def parse_number(str_num: str) -> int:
-	num = -1
-	if not str_num:
-		return -1
-
-	try:
-		if str_num.startswith('0x'):
-			num = int(str_num, 16)
-		else:
-			num = int(str_num)
-	except ValueError:
-		try:
-			num = int(str_num, 16)
-		except ValueError:
-			return -1
-
-	return num
 
 @dataclass
 class MapInfo(object):
@@ -543,8 +535,14 @@ def read_mem(addr: int, size: int) -> bytes:
 
 	return mem_data
 
-def read_pointer(addr: int) -> int:
-	pointer_size = get_pointer_size()
+def readable(addr: int) -> bool:
+	try:
+		mem = read_mem(addr, 1)
+	except LLDBMemoryException:
+		return False
+	return True if len(mem) == 1 else False
+
+def read_pointer_from(addr: int, pointer_size: int) -> int:
 	membuf = read_mem(addr, pointer_size)
 	if not membuf:
 		raise LLDBMemoryException(f'Unable to read pointer from {hex(addr)}')
@@ -607,22 +605,6 @@ def write_mem(addr: int, data: bytes) -> int:
 
 	return sz_write
 
-def try_read_mem(addr: int, size: int) ->  bytes:
-	err = SBError()
-	process = get_process()
-	if process == None:
-		raise LLDBMemoryException('get_process() return None')
-
-	mem_data = b''
-	while size != 0:
-		mem_data = process.ReadMemory(addr, size, err)
-		if err.Success():
-			break
-
-		size -= 1
-
-	return mem_data
-
 def size_of(struct_name: str) -> int:
 	res = lldb.SBCommandReturnObject()
 	ci: SBCommandInterpreter = get_debugger().GetCommandInterpreter()
@@ -656,6 +638,13 @@ def strip_kernelPAC(pointer: int) -> int:
 	
 	T1Sz = ESBValue('gT1Sz')
 	return stripPAC(pointer, T1Sz.int_value)
+
+def strip_kernel_or_userPAC(pointer: int) -> int:
+	try:
+		T1Sz = ESBValue('gT1Sz')
+		return stripPAC(pointer, T1Sz.int_value)
+	except ESBValueException:
+		return stripPAC(pointer, 24) # last 3 bytes is PAC signature in user-mode
 
 TYPE_NAME_CACHE = {}
 ENUM_NAME_CACHE = {}
@@ -759,6 +748,7 @@ class ESBValue(object):
 
 	sb_var_name: str
 	sb_value: SBValue
+	is_expression: bool
 	# store metadata for ESBValue
 	sb_attributes: Dict[str, Any]
 
@@ -767,6 +757,7 @@ class ESBValue(object):
 		self.sb_var_name = ''
 		# store metadata
 		self.sb_attributes = {}
+		self.is_expression = False
 
 		if var_name == 'classcall':
 			# skip initialize for classcall
@@ -804,6 +795,20 @@ class ESBValue(object):
 		new_esbvalue = cls('classcall')
 		new_esbvalue.sb_value = target.CreateValueFromExpression('var_name', f'({var_type}){address}')
 		new_esbvalue.sb_var_name = 'var_name'
+		return new_esbvalue
+	
+	@classmethod
+	def init_with_expression(cls: Type['ESBValue'], expression: str):
+		frame = get_frame()
+		if frame != None:
+			exp_sbvalue: SBValue = frame.EvaluateExpression(expression)
+		else:
+			target = get_target()
+			exp_sbvalue: SBValue = target.EvaluateExpression(expression)
+		
+		new_esbvalue = cls('classcall')
+		new_esbvalue.sb_value = exp_sbvalue
+		new_esbvalue.is_expression = True
 		return new_esbvalue
 	
 	@classmethod
@@ -891,19 +896,23 @@ class ESBValue(object):
 		content = self.value
 		type_name = self.value_type
 
+		if content == None:
+			return 0
+
 		if type_name.startswith('uint8_t') or type_name.startswith('int8_t') or \
 				type_name.startswith('char'):
 			# trying to cast value to int in Python
 			content = content.strip("'\\x")
 			return int(content, 16)
 
-		if content.startswith('0x'):
-			return int(content, 16)
-
-		return int(content)
+		return parse_number(content)
 	
 	@property
 	def str_value(self: Self, max_length: int = 1024) -> str:
+		if self.is_expression:
+			summary:str = self.sb_value.GetSummary()
+			return summary.strip('"')
+
 		return read_cstr(self.addr_of(), max_length).decode('utf-8')
 	
 	@property
@@ -917,14 +926,15 @@ class ESBValue(object):
 	def var_type_name(self: Self) -> str:
 		return self.sb_value.GetTypeName()
 	
+	@property
+	def summary(self: Self) -> str:
+		return self.sb_value.GetSummary()
+	
 	def dereference(self: Self) -> 'ESBValue':
 		'''
 			dereference a pointer
 		'''
 		return ESBValue.init_with_SBValue(self.sb_value.Dereference())
-
-	def summary(self: Self) -> str:
-		return self.sb_value.GetSummary()
 	
 	def get_SBAddress(self: Self) -> SBAddress:
 		return self.sb_value.GetAddress()

@@ -215,7 +215,7 @@ def xnu_panic_log() -> bytes:
 	panic_buf = panic_info.int_value
 
 	panic_log_begin_offset = panic_info.get('mph_panic_log_offset').int_value
-	panic_log_len = panic_info.get('panic_log_len').int_value
+	panic_log_len = panic_info.get('mph_panic_log_len').int_value
 	other_log_begin_offset = panic_info.get('mph_other_log_offset').int_value
 	other_log_len = panic_info.get('mph_other_log_len').int_value
 
