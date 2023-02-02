@@ -3619,7 +3619,7 @@ def print_cpu_registers(register_names: List[str]):
 				if register_name in ('rsp', 'esp', 'sp'):
 					color("BLUE")
 
-				elif register_name in ('rip', 'eip', 'pc'):
+				elif register_name in ('rip', 'eip', 'pc', 'lr'):
 					color("RED")
 
 				else:

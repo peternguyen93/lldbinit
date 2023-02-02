@@ -339,17 +339,6 @@ def objc_get_classname(objc: str) -> str:
 		return ''
 	
 	return class_name.str_value
-	# try:
-	# 	frame = get_frame()
-	# except LLDBFrameNotFound:
-	# 	return ''
-
-	# classname: SBValue = frame.EvaluateExpression(classname_command)
-	# if classname.IsValid() == False:
-	# 	return ''
-	
-	# classname_str: str = classname.GetSummary()
-	# return classname_str.strip('"')
 
 def find_module_by_name(target: SBTarget, module_name: str):
 	for module in target.modules:
@@ -368,12 +357,22 @@ def resolve_symbol_name(address: int) -> str:
 	'''
 
 	target = get_target()
+
+	# because address could less than zero -> force it into unsigned int
+	pz = get_pointer_size()
+	if pz == 4:
+		address = ctypes.c_uint32(address).value
+	elif pz == 8:
+		address = ctypes.c_uint64(address).value
 	
-	sb_addr = SBAddress(address, target)
-	addr_sym: SBSymbol = sb_addr.GetSymbol()
-	
-	if addr_sym.IsValid():
-		return addr_sym.GetName()
+	try:
+		sb_addr = SBAddress(address, target)
+		addr_sym: SBSymbol = sb_addr.GetSymbol()
+		
+		if addr_sym.IsValid():
+			return addr_sym.GetName()
+	except TypeError:
+		pass
 	
 	return ''
 
