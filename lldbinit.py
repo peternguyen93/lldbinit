@@ -3619,7 +3619,7 @@ def print_cpu_registers(register_names: List[str]):
 				if register_name in ('rsp', 'esp', 'sp'):
 					color("BLUE")
 
-				elif register_name in ('rip', 'eip', 'pc', 'lr'):
+				elif register_name in ('rip', 'eip', 'pc'):
 					color("RED")
 
 				else:
@@ -3915,6 +3915,9 @@ def print_registers():
 
 	print_cpu_registers(register_format)
 
+prev_disas_addr = 0
+PREV_INSTRUCTION_NUM = 3 # number of previous execution instruction to be displayed
+
 def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Display current code context.'''
 	# Don't display anything if we're inside Xcode
@@ -3925,6 +3928,7 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	global CONFIG_DISPLAY_STACK_WINDOW
 	global CONFIG_DISPLAY_FLOW_WINDOW
 	global POINTER_SIZE
+	global prev_disas_addr
 
 	debugger.SetAsync(True)
 
@@ -4016,9 +4020,27 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	color("BOLD")
 	output("[code]\n")
 	color("RESET")
-			
+
+	if not prev_disas_addr:
+		prev_disas_addr = get_current_pc()
+
+	cur_pc = get_current_pc()
+
+	# improve better display disasseble instructions 
+	if cur_pc > prev_disas_addr:
+		# get number of instructions from prev_disas_addr to cur_pc
+		count = get_instruction_count(prev_disas_addr, cur_pc, CONFIG_DISASSEMBLY_LINE_COUNT)
+
+		# update prev_disas_addr with cur_pc when number of previous instruction reach the limit
+		if count > PREV_INSTRUCTION_NUM or count == 0:
+			prev_disas_addr = cur_pc
+
+	elif cur_pc < prev_disas_addr:
+		# in this case cur_pc jump into another location, update prev_disas_addr
+		prev_disas_addr = cur_pc
+
 	# disassemble and add its contents to output inside
-	disassemble(get_current_pc(), CONFIG_DISASSEMBLY_LINE_COUNT)
+	disassemble(prev_disas_addr, CONFIG_DISASSEMBLY_LINE_COUNT)
 		
 	color(COLOR_SEPARATOR)
 	if POINTER_SIZE == 4:

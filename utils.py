@@ -72,10 +72,10 @@ def get_color_status(addr: int) -> str:
 		return ''
 
 	module_map = resolve_mem_map(target, addr)
-	if module_map.section_name == '__TEXT':
+	if module_map.section_name.startswith('__TEXT'):
 		# address is excutable page
 		return "RED"
-	elif module_map.section_name == '__DATA':
+	elif module_map.section_name.startswith('__DATA'):
 		return "MAGENTA"
 
 	return "WHITE" if not readable(addr) else "CYAN"
@@ -327,6 +327,18 @@ def get_current_sp() -> int:
 		print("[-] get_current_sp() error: wrong architecture.")
 		return 0
 	return sp_addr
+
+def get_instruction_count(start: int, end: int, max_inst: int) -> int:
+	'''
+		Return how many instructions from start address to end address
+	'''
+
+	target = get_target()
+	sb_start = SBAddress(start, target)
+	sb_end = SBAddress(end, target)
+
+	instructions: SBInstructionList = target.ReadInstructions(sb_start, max_inst, 'intel')
+	return instructions.GetInstructionsCount(sb_start, sb_end, False)
 
 # ----------------------------------------------------------
 # LLDB Module functions
