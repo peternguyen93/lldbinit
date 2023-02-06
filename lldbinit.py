@@ -2264,8 +2264,6 @@ def get_inst_size(target_addr: int) -> int:
 # the disassembler we use on stop context
 # we can customize output here instead of using the cmdline as before and grabbing its output
 def disassemble(start_address: int, count: int):
-	global ARM64E_STACK
-
 	target = get_target()
 
 	# this init will set a file_addr instead of expected load_addr
@@ -2318,8 +2316,8 @@ def disassemble(start_address: int, count: int):
 	module_name: str = module.file.fullpath
 
 	count = 0
-	blockstart_sbaddr = None
-	blockend_sbaddr = None
+	blockstart_sbaddr: Optional[SBAddress] = None
+	blockend_sbaddr: Optional[SBAddress] = None
 	# for mem_inst in instructions_mem:
 	for mem_inst in instructions_file:
 		mem_inst: SBInstruction = mem_inst
