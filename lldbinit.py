@@ -2266,35 +2266,9 @@ def get_inst_size(target_addr: int) -> int:
 def disassemble(start_address: int, count: int):
 	target = get_target()
 
-	# this init will set a file_addr instead of expected load_addr
-	# and so the disassembler output will be referenced to the file address
-	# instead of the current loaded memory address
-	# this is annoying because all RIP references will be related to file addresses
-	file_sbaddr = SBAddress(start_address, target)
-	# create a SBAddress object with the load_addr set so we can disassemble with
-	# current memory addresses and what is happening right now
-	# we use the empty init and then set the property which is read/write for load_addr
-	# this whole thing seems like a bug?
-	# mem_sbaddr = lldb.SBAddress()
-	# mem_sbaddr.load_addr = start_address
-	# disassemble to get the file and memory version
-	# we could compute this by finding sections etc but this way it seems
-	# much simpler and faster
-	# this seems to be a bug or missing feature because there is no way
-	# to distinguish between the load and file addresses in the disassembler
-	# the reason might be because we can't create a SBAddress that has
-	# load_addr and file_addr set so that the disassembler can distinguish them
-	# somehow when we use file_sbaddr object the SBAddress GetLoadAddress()
-	# retrieves the correct memory address for the instruction while the
-	# SBAddress GetFileAddress() retrives the correct file address
-	# but the branch instructions addresses are the file addresses
-	# bug on SBAddress init implementation???
-	# this also has problems with symbols - the memory version doesn't have them
-	# instructions_mem = target.ReadInstructions(mem_sbaddr, count, "intel")
-	instructions_file: SBInstructionList = target.ReadInstructions(file_sbaddr, count, "intel")
-	# if instructions_mem.GetSize() != instructions_file.GetSize():
-	# 	print("[-] error: instructions arrays sizes are different.")
-	# 	return
+	# read instructions from start_address
+	instructions_file = read_instructions(start_address, count)
+
 	# find out the biggest instruction lenght and mnemonic length
 	# so we can have a uniform output
 	max_size = 0
@@ -2311,9 +2285,7 @@ def disassemble(start_address: int, count: int):
 	
 	current_pc = get_current_pc()
 	# get info about module if there is a symbol
-	module: SBModule = file_sbaddr.module
-	#module_name = module.file.GetFilename()
-	module_name: str = module.file.fullpath
+	module_name = get_module_name_from(start_address)
 
 	count = 0
 	blockstart_sbaddr: Optional[SBAddress] = None
@@ -2336,6 +2308,7 @@ def disassemble(start_address: int, count: int):
 					color("RESET")
 				else:
 					output("@ {}:".format(module_name) + "\n")            
+		
 		elif symbol_name:
 			# print the first time there is a symbol name and save its interval
 			# so we don't print again until there is a different symbol
@@ -2369,11 +2342,13 @@ def disassemble(start_address: int, count: int):
 		bytes_string = ""
 		total_fill = max_size - mem_inst.size
 		total_spaces = mem_inst.size - 1
+		
 		for x in inst_data:
 			bytes_string += "{:02x}".format(x)
 			if total_spaces > 0:
 				bytes_string += " "
 				total_spaces -= 1
+		
 		if total_fill > 0:
 			# we need one more space because the last byte doesn't have space
 			# and if we are smaller than max size we are one space short
@@ -2393,7 +2368,6 @@ def disassemble(start_address: int, count: int):
 		# for modules it will be the address in the module code, not the address it's loaded at
 		# so we can use this address to quickly get to current instruction in module loaded at a disassembler
 		# without having to rebase everything etc
-		#file_addr = mem_inst.addr.GetFileAddress()
 		file_addr = file_inst.addr.GetFileAddress()
 
 		# fix dyld_shared_arm64 dispatch function to correct symbol name
@@ -2405,8 +2379,8 @@ def disassemble(start_address: int, count: int):
 			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
 		
 		if not dyld_resolve_name:
-			comment = file_inst.GetComment(target)
-			if comment != '':
+			comment:str = file_inst.GetComment(target)
+			if comment:
 				comment = " ; " + comment
 		else:
 			comment = " ; resolve symbol stub: j___" + dyld_resolve_name
@@ -2432,7 +2406,7 @@ def disassemble(start_address: int, count: int):
 					if target_symbol_name:
 						symbol_info = target_symbol_name + " @ "
 					
-					if comment == "":
+					if not comment:
 						# remove space for instructions without operands
 						# if mem_inst.operands == "":
 						if mem_inst.GetOperands(target):
@@ -2463,8 +2437,6 @@ def disassemble(start_address: int, count: int):
 			output("    0x{:x} (0x{:x}): {}  {}   {}{}".format(memory_addr, file_addr, bytes_string, mnem, operands, comment) + "\n")
 
 		count += 1
-	
-	return
 
 # ------------------------------------
 # Commands that use external utilities
@@ -2551,7 +2523,6 @@ Note: expressions supported, do not use spaces between operators.
 	
 	# recent otool versions will fail so we need to read a reasonable amount of memory
 	# even just for the mach-o header
-	# bytes_string = get_process().ReadMemory(header_addr, 4096*10, error)
 	data = read_mem(header_addr, 4096*10)
 	if not len(data):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(header_addr))
@@ -3914,7 +3885,7 @@ def print_registers():
 	print_cpu_registers(register_format)
 
 prev_disas_addr = 0
-PREV_INSTRUCTION_NUM = 3 # number of previous execution instruction to be displayed
+PREV_INSTRUCTION_NUM = CONFIG_DISASSEMBLY_LINE_COUNT // 2 # number of previous execution instruction to be displayed
 
 def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Display current code context.'''

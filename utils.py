@@ -328,6 +328,18 @@ def get_current_sp() -> int:
 		return 0
 	return sp_addr
 
+def get_module_name_from(address: int) -> str:
+	target = get_target()
+	sb_addr = SBAddress(address, target)
+
+	module: SBModule = sb_addr.module
+	return typing.cast(str, module.file.fullpath)
+
+def read_instructions(start: int, count: int) -> SBInstructionList:
+	target = get_target()
+	sb_start = SBAddress(start, target)
+	return target.ReadInstructions(sb_start, count, 'intel')
+
 def get_instruction_count(start: int, end: int, max_inst: int) -> int:
 	'''
 		Return how many instructions from start address to end address
@@ -337,7 +349,7 @@ def get_instruction_count(start: int, end: int, max_inst: int) -> int:
 	sb_start = SBAddress(start, target)
 	sb_end = SBAddress(end, target)
 
-	instructions: SBInstructionList = target.ReadInstructions(sb_start, max_inst, 'intel')
+	instructions = read_instructions(start, max_inst)
 	return instructions.GetInstructionsCount(sb_start, sb_end, False)
 
 # ----------------------------------------------------------
