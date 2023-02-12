@@ -642,32 +642,37 @@ def size_of(struct_name: str) -> int:
 	
 	return -1
 
+PAC_BL_INSTS = (
+	'blraa', 'blraaz', 'blrab', 'blrabz', 'braa', 'braaz', 'brab', 'brabz'
+)
+
+def is_bl_pac_inst(mnemonic: str) -> bool:
+	return mnemonic in PAC_BL_INSTS
+
 SIGN_MASK = 1 << 55
 INT64_MAX = 18446744073709551616
 
-def stripPAC(pointer: int , type_size: int) -> int:
+def is_kernel_space(addr: int) -> bool:
+	# assum address is 64 bit address
+	return (addr & 0xfffffff000000000) != 0
+		
+def stripPAC(pointer: int, type_size: int) -> int:
 	ptr_mask = (1 << (64 - type_size)) - 1
 	pac_mask = ~ptr_mask
-	sign = pointer & SIGN_MASK
-
-	if sign:
+	if pointer & SIGN_MASK:
 		return (pointer | pac_mask) + INT64_MAX
 	else:
 		return pointer & ptr_mask
 
-def strip_kernelPAC(pointer: int) -> int:
+def strip_kernel_or_userPAC(pointer: int) -> int:
 	if get_arch() != 'arm64e':
 		return pointer
-	
-	T1Sz = ESBValue('gT1Sz')
-	return stripPAC(pointer, T1Sz.int_value)
 
-def strip_kernel_or_userPAC(pointer: int) -> int:
 	try:
 		T1Sz = ESBValue('gT1Sz')
 		return stripPAC(pointer, T1Sz.int_value)
 	except ESBValueException:
-		return stripPAC(pointer, 24) # last 3 bytes is PAC signature in user-mode
+		return stripPAC(pointer, 25)
 
 TYPE_NAME_CACHE = {}
 ENUM_NAME_CACHE = {}

@@ -3343,9 +3343,13 @@ def get_indirect_flow_target(source_address: int) -> int:
 			- call [x64 register] (begin with "r")
 			- call [x86 register] (begin with "e")
 			- bl/b [arm64 register] (begin with "x")
+			- blraa [arm64 register], [arm64 register]
+			- braa [arm64 register], [arm64 register]
 		'''
 
-		if mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
+		# if mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz') \
+		# 	or mnemonic == 'braa':
+		if is_bl_pac_inst(mnemonic):
 			# handle branch with link register with pointer authentication
 			operand = operand.split(',')[0].strip(' ')
 
@@ -3470,18 +3474,19 @@ def get_indirect_flow_address(src_addr: int) -> int:
 		# decode PAC pointer
 		return strip_kernel_or_userPAC(get_ret_address())
 
-	# if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
 	# trace both x86_64 and arm64
 	if mnemonic in ('call', 'jmp') or \
 		mnemonic in ('bl', 'br', 'b', 'blr') or \
-			mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
+			is_bl_pac_inst(mnemonic):
 		# don't care about RIP relative jumps
-		# if cur_instruction.operands.startswith('0x'):
 		operands: str = cur_instruction.GetOperands(target)
 		if operands.startswith('0x'):
 			return -1
 		
 		indirect_addr = get_indirect_flow_target(src_addr)
+		if is_bl_pac_inst(mnemonic):
+			return strip_kernel_or_userPAC(indirect_addr)
+
 		return indirect_addr
 
 	# all other branches just return -1
