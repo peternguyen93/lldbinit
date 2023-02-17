@@ -72,10 +72,10 @@ def get_color_status(addr: int) -> str:
 		return ''
 
 	module_map = resolve_mem_map(target, addr)
-	if module_map.section_name == '__TEXT':
+	if module_map.section_name.startswith('__TEXT'):
 		# address is excutable page
 		return "RED"
-	elif module_map.section_name == '__DATA':
+	elif module_map.section_name.startswith('__DATA'):
 		return "MAGENTA"
 
 	return "WHITE" if not readable(addr) else "CYAN"
@@ -92,12 +92,6 @@ class LLDBTargetNotFound(Exception):
 class LLDBFrameNotFound(Exception):
 	def __init__(self, *args: object) -> None:
 		super().__init__(*args)
-
-def get_selected_frame(debugger: SBDebugger) -> Optional[SBFrame]:
-	process = debugger.GetSelectedTarget().GetProcess()
-	thread = process.GetSelectedThread()
-	frame = thread.GetSelectedFrame()
-	return frame
 
 def get_debugger() -> SBDebugger:
 	debugger: Optional[SBDebugger] = lldb.debugger
@@ -155,10 +149,14 @@ def get_thread() -> Optional[SBThread]:
 
 	return thread
 
+class ParseValueError(Exception):
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
+
 def parse_number(str_num: str) -> int:
 	num = -1
 	if not str_num:
-		return -1
+		raise ParseValueError('str_num is empty')
 
 	try:
 		if str_num.startswith('0x') or str_num.startswith('0X'):
@@ -172,7 +170,7 @@ def parse_number(str_num: str) -> int:
 			# parse hex number without prefix
 			num = int(str_num, 16)
 		except ValueError:
-			return -1
+			raise ParseValueError('str_num is not hex number of decimal number')
 
 	return num
 
@@ -200,28 +198,31 @@ def evaluate(command: str) -> int:
 		- hex string -> convert to int
 		- int string -> convert to int
 	'''
-
-	# assume command is lldb command
-	some_express = ESBValue.init_with_expression(command)
-	if some_express.is_valid:
-		return some_express.int_value
-
-	# assume command is variable
+	# assume command is number
 	try:
-		some_var = ESBValue(command)
-		if not some_var.is_valid:
-			# this command is not variable name, try to convert to int
-			return parse_number(command)
-		
-		if some_var.value == None:
-			# this variable name doesn't hold address, get address of this some_var instead
-			return some_var.addr_of()
-
-		return some_var.int_value
-
-	except ESBValueException:
-		# this command is not variable name, try to convert to int
 		return parse_number(command)
+	
+	except ParseValueError:
+		# assume command is variable
+		try:
+			some_var = ESBValue(command)
+			if not some_var.is_valid:
+				# this command is not variable name, assum command is lldb command
+				raise ESBValueException
+			
+			if some_var.value == None:
+				# this variable name doesn't hold address, get address of this some_var instead
+				return some_var.addr_of()
+
+			return some_var.int_value
+
+		except ESBValueException:
+			# assume command is lldb command
+			some_express = ESBValue.init_with_expression(command)
+			if some_express.is_valid:
+				return some_express.int_value
+
+	return 0
 
 def is_i386() -> bool:
 	arch = get_arch()
@@ -328,6 +329,30 @@ def get_current_sp() -> int:
 		return 0
 	return sp_addr
 
+def get_module_name_from(address: int) -> str:
+	target = get_target()
+	sb_addr = SBAddress(address, target)
+
+	module: SBModule = sb_addr.module
+	return typing.cast(str, module.file.fullpath)
+
+def read_instructions(start: int, count: int) -> SBInstructionList:
+	target = get_target()
+	sb_start = SBAddress(start, target)
+	return target.ReadInstructions(sb_start, count, 'intel')
+
+def get_instruction_count(start: int, end: int, max_inst: int) -> int:
+	'''
+		Return how many instructions from start address to end address
+	'''
+
+	target = get_target()
+	sb_start = SBAddress(start, target)
+	sb_end = SBAddress(end, target)
+
+	instructions = read_instructions(start, max_inst)
+	return instructions.GetInstructionsCount(sb_start, sb_end, False)
+
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
@@ -339,17 +364,6 @@ def objc_get_classname(objc: str) -> str:
 		return ''
 	
 	return class_name.str_value
-	# try:
-	# 	frame = get_frame()
-	# except LLDBFrameNotFound:
-	# 	return ''
-
-	# classname: SBValue = frame.EvaluateExpression(classname_command)
-	# if classname.IsValid() == False:
-	# 	return ''
-	
-	# classname_str: str = classname.GetSummary()
-	# return classname_str.strip('"')
 
 def find_module_by_name(target: SBTarget, module_name: str):
 	for module in target.modules:
@@ -368,12 +382,22 @@ def resolve_symbol_name(address: int) -> str:
 	'''
 
 	target = get_target()
+
+	# because address could less than zero -> force it into unsigned int
+	pz = get_pointer_size()
+	if pz == 4:
+		address = ctypes.c_uint32(address).value
+	elif pz == 8:
+		address = ctypes.c_uint64(address).value
 	
-	sb_addr = SBAddress(address, target)
-	addr_sym: SBSymbol = sb_addr.GetSymbol()
-	
-	if addr_sym.IsValid():
-		return addr_sym.GetName()
+	try:
+		sb_addr = SBAddress(address, target)
+		addr_sym: SBSymbol = sb_addr.GetSymbol()
+		
+		if addr_sym.IsValid():
+			return addr_sym.GetName()
+	except TypeError:
+		pass
 	
 	return ''
 
@@ -619,32 +643,37 @@ def size_of(struct_name: str) -> int:
 	
 	return -1
 
+PAC_BL_INSTS = (
+	'blraa', 'blraaz', 'blrab', 'blrabz', 'braa', 'braaz', 'brab', 'brabz'
+)
+
+def is_bl_pac_inst(mnemonic: str) -> bool:
+	return mnemonic in PAC_BL_INSTS
+
 SIGN_MASK = 1 << 55
 INT64_MAX = 18446744073709551616
 
-def stripPAC(pointer: int , type_size: int) -> int:
+def is_kernel_space(addr: int) -> bool:
+	# assum address is 64 bit address
+	return (addr & 0xfffffff000000000) != 0
+		
+def stripPAC(pointer: int, type_size: int) -> int:
 	ptr_mask = (1 << (64 - type_size)) - 1
 	pac_mask = ~ptr_mask
-	sign = pointer & SIGN_MASK
-
-	if sign:
+	if pointer & SIGN_MASK:
 		return (pointer | pac_mask) + INT64_MAX
 	else:
 		return pointer & ptr_mask
 
-def strip_kernelPAC(pointer: int) -> int:
+def strip_kernel_or_userPAC(pointer: int) -> int:
 	if get_arch() != 'arm64e':
 		return pointer
-	
-	T1Sz = ESBValue('gT1Sz')
-	return stripPAC(pointer, T1Sz.int_value)
 
-def strip_kernel_or_userPAC(pointer: int) -> int:
 	try:
 		T1Sz = ESBValue('gT1Sz')
 		return stripPAC(pointer, T1Sz.int_value)
 	except ESBValueException:
-		return stripPAC(pointer, 24) # last 3 bytes is PAC signature in user-mode
+		return stripPAC(pointer, 25)
 
 TYPE_NAME_CACHE = {}
 ENUM_NAME_CACHE = {}
@@ -1036,7 +1065,7 @@ def cyclic_find(subseq: Union[int, bytes], length: int = 0x10000) -> int:
 	
 	return -1
 
-def hexdump(addr: int, chars: bytes, sep: str, width: int, lines=0xFFFFFFF) -> str:
+def hexdump(addr: int, chars: bytes, sep: str, width: int, lines: int = 0xFFFFFFF) -> str:
 	l = []
 	line_count = 0
 	
@@ -1100,30 +1129,6 @@ def get_connection_protocol() -> str:
 		retval = "core"
 
 	return retval
-
-def address_of(target: SBTarget, sb_value: SBValue) -> int:
-	try:
-		sb_address: SBAddress = sb_value.GetAddress()
-		if sb_address.IsValid():
-			return sb_address.GetLoadAddress(target)
-		return 0xffffffffffffffff
-	except AttributeError:
-		return 0xffffffffffffffff
-
-def cast_address_as_pointer_type(
-		target: SBTarget,
-		var_name: str,
-		address: int,
-		type_name: str) -> Optional[SBValue]:
-
-	sb_type: SBType = target.FindFirstType(type_name)
-	pointer_type: SBType = sb_type.GetPointerType()
-	
-	if pointer_type.IsValid():
-		my_var = target.CreateValueFromExpression(var_name, f'({pointer_type.name}){hex(address)}')
-		return my_var
-
-	return None
 
 def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
 	'''

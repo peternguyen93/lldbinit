@@ -56,7 +56,6 @@ import sys
 import re
 import os
 import time
-import struct
 import argparse
 import subprocess
 import tempfile
@@ -71,7 +70,7 @@ try:
 except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 #
 # User configurable options
@@ -905,7 +904,6 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 	
-	target = get_target()
 	bytes_string = read_mem(int3_addr, 1)
 	if not len(bytes_string):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(int3_addr))
@@ -1319,7 +1317,7 @@ Note: expressions supported, do not use spaces between operators.
 	#output(hexdump(dump_addr, membuff, " ", 16));
 	index = 0
 	while index < 0x100:
-		data = struct.unpack(b"B"*16, membuff[index:index+0x10])
+		data = unpack(b"B"*16, membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1410,7 +1408,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")
 	index = 0
 	while index < 0x100:
-		data = struct.unpack("HHHHHHHH", membuff[index:index+0x10])
+		data = unpack("HHHHHHHH", membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1488,7 +1486,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")
 	index = 0
 	while index < 0x100:
-		(mem0, mem1, mem2, mem3) = struct.unpack("IIII", membuff[index:index+0x10])
+		(mem0, mem1, mem2, mem3) = unpack("IIII", membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1563,7 +1561,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")   
 	index = 0
 	while index < 0x100:
-		(mem0, mem1, mem2, mem3) = struct.unpack("QQQQ", membuff[index:index+0x20])
+		(mem0, mem1, mem2, mem3) = unpack("QQQQ", membuff[index:index+0x20])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1607,13 +1605,13 @@ def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObjec
 		if not dword:
 			print("[-] Error evaluating : " + parser.dword)
 			return
-		search_string = struct.pack("I", dword & 0xffffffff)
+		search_string = p32(dword & 0xffffffff)
 	elif parser.qword != None:
 		qword = evaluate(parser.qword)
 		if not qword:
 			print("[-] Error evaluating : " + parser.qword)
 			return
-		search_string = struct.pack("Q", qword & 0xffffffffffffffff)
+		search_string = p64(qword & 0xffffffffffffffff)
 	elif parser.file != None:
 		f = 0
 		try:
@@ -2264,39 +2262,11 @@ def get_inst_size(target_addr: int) -> int:
 # the disassembler we use on stop context
 # we can customize output here instead of using the cmdline as before and grabbing its output
 def disassemble(start_address: int, count: int):
-	global ARM64E_STACK
-
 	target = get_target()
 
-	# this init will set a file_addr instead of expected load_addr
-	# and so the disassembler output will be referenced to the file address
-	# instead of the current loaded memory address
-	# this is annoying because all RIP references will be related to file addresses
-	file_sbaddr = SBAddress(start_address, target)
-	# create a SBAddress object with the load_addr set so we can disassemble with
-	# current memory addresses and what is happening right now
-	# we use the empty init and then set the property which is read/write for load_addr
-	# this whole thing seems like a bug?
-	# mem_sbaddr = lldb.SBAddress()
-	# mem_sbaddr.load_addr = start_address
-	# disassemble to get the file and memory version
-	# we could compute this by finding sections etc but this way it seems
-	# much simpler and faster
-	# this seems to be a bug or missing feature because there is no way
-	# to distinguish between the load and file addresses in the disassembler
-	# the reason might be because we can't create a SBAddress that has
-	# load_addr and file_addr set so that the disassembler can distinguish them
-	# somehow when we use file_sbaddr object the SBAddress GetLoadAddress()
-	# retrieves the correct memory address for the instruction while the
-	# SBAddress GetFileAddress() retrives the correct file address
-	# but the branch instructions addresses are the file addresses
-	# bug on SBAddress init implementation???
-	# this also has problems with symbols - the memory version doesn't have them
-	# instructions_mem = target.ReadInstructions(mem_sbaddr, count, "intel")
-	instructions_file: SBInstructionList = target.ReadInstructions(file_sbaddr, count, "intel")
-	# if instructions_mem.GetSize() != instructions_file.GetSize():
-	# 	print("[-] error: instructions arrays sizes are different.")
-	# 	return
+	# read instructions from start_address
+	instructions_file = read_instructions(start_address, count)
+
 	# find out the biggest instruction lenght and mnemonic length
 	# so we can have a uniform output
 	max_size = 0
@@ -2313,13 +2283,11 @@ def disassemble(start_address: int, count: int):
 	
 	current_pc = get_current_pc()
 	# get info about module if there is a symbol
-	module: SBModule = file_sbaddr.module
-	#module_name = module.file.GetFilename()
-	module_name: str = module.file.fullpath
+	module_name = get_module_name_from(start_address)
 
 	count = 0
-	blockstart_sbaddr = None
-	blockend_sbaddr = None
+	blockstart_sbaddr: Optional[SBAddress] = None
+	blockend_sbaddr: Optional[SBAddress] = None
 	# for mem_inst in instructions_mem:
 	for mem_inst in instructions_file:
 		mem_inst: SBInstruction = mem_inst
@@ -2338,6 +2306,7 @@ def disassemble(start_address: int, count: int):
 					color("RESET")
 				else:
 					output("@ {}:".format(module_name) + "\n")            
+		
 		elif symbol_name:
 			# print the first time there is a symbol name and save its interval
 			# so we don't print again until there is a different symbol
@@ -2371,11 +2340,13 @@ def disassemble(start_address: int, count: int):
 		bytes_string = ""
 		total_fill = max_size - mem_inst.size
 		total_spaces = mem_inst.size - 1
+		
 		for x in inst_data:
 			bytes_string += "{:02x}".format(x)
 			if total_spaces > 0:
 				bytes_string += " "
 				total_spaces -= 1
+		
 		if total_fill > 0:
 			# we need one more space because the last byte doesn't have space
 			# and if we are smaller than max size we are one space short
@@ -2395,7 +2366,6 @@ def disassemble(start_address: int, count: int):
 		# for modules it will be the address in the module code, not the address it's loaded at
 		# so we can use this address to quickly get to current instruction in module loaded at a disassembler
 		# without having to rebase everything etc
-		#file_addr = mem_inst.addr.GetFileAddress()
 		file_addr = file_inst.addr.GetFileAddress()
 
 		# fix dyld_shared_arm64 dispatch function to correct symbol name
@@ -2407,8 +2377,8 @@ def disassemble(start_address: int, count: int):
 			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
 		
 		if not dyld_resolve_name:
-			comment = file_inst.GetComment(target)
-			if comment != '':
+			comment:str = file_inst.GetComment(target)
+			if comment:
 				comment = " ; " + comment
 		else:
 			comment = " ; resolve symbol stub: j___" + dyld_resolve_name
@@ -2434,7 +2404,7 @@ def disassemble(start_address: int, count: int):
 					if target_symbol_name:
 						symbol_info = target_symbol_name + " @ "
 					
-					if comment == "":
+					if not comment:
 						# remove space for instructions without operands
 						# if mem_inst.operands == "":
 						if mem_inst.GetOperands(target):
@@ -2465,8 +2435,6 @@ def disassemble(start_address: int, count: int):
 			output("    0x{:x} (0x{:x}): {}  {}   {}{}".format(memory_addr, file_addr, bytes_string, mnem, operands, comment) + "\n")
 
 		count += 1
-	
-	return
 
 # ------------------------------------
 # Commands that use external utilities
@@ -2553,7 +2521,6 @@ Note: expressions supported, do not use spaces between operators.
 	
 	# recent otool versions will fail so we need to read a reasonable amount of memory
 	# even just for the mach-o header
-	# bytes_string = get_process().ReadMemory(header_addr, 4096*10, error)
 	data = read_mem(header_addr, 4096*10)
 	if not len(data):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(header_addr))
@@ -3340,10 +3307,8 @@ def get_indirect_flow_target(source_address: int) -> int:
 	if mnemonic == 'tbz':
 		return 0
 
-	#output("Operand: {}\n".format(operand))
 	# calls into a deferenced memory address
 	if "qword" in operand:
-		#output("dereferenced call\n")
 		deref_addr = 0
 		# first we need to find the address to dereference
 		if '+' in operand:
@@ -3374,9 +3339,11 @@ def get_indirect_flow_target(source_address: int) -> int:
 			- call [x64 register] (begin with "r")
 			- call [x86 register] (begin with "e")
 			- bl/b [arm64 register] (begin with "x")
+			- blraa [arm64 register], [arm64 register]
+			- braa [arm64 register], [arm64 register]
 		'''
 
-		if mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
+		if is_bl_pac_inst(mnemonic):
 			# handle branch with link register with pointer authentication
 			operand = operand.split(',')[0].strip(' ')
 
@@ -3385,12 +3352,10 @@ def get_indirect_flow_target(source_address: int) -> int:
 
 	# RIP relative calls
 	elif operand.startswith('0x'):
-		#output("direct call\n")
 		# the disassembler already did the dirty work for us
 		# so we just extract the address
 		x = re.search('(0x[0-9a-z]+)', operand)
 		if x != None:
-			#output("Result {}\n".format(x.group(0)))
 			return int(x.group(1), 16)
 	
 	return 0
@@ -3501,18 +3466,19 @@ def get_indirect_flow_address(src_addr: int) -> int:
 		# decode PAC pointer
 		return strip_kernel_or_userPAC(get_ret_address())
 
-	# if ("call" in cur_instruction.mnemonic) or ("jmp" in cur_instruction.mnemonic):
 	# trace both x86_64 and arm64
 	if mnemonic in ('call', 'jmp') or \
 		mnemonic in ('bl', 'br', 'b', 'blr') or \
-			mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz'):
+			is_bl_pac_inst(mnemonic):
 		# don't care about RIP relative jumps
-		# if cur_instruction.operands.startswith('0x'):
 		operands: str = cur_instruction.GetOperands(target)
 		if operands.startswith('0x'):
 			return -1
 		
 		indirect_addr = get_indirect_flow_target(src_addr)
+		if is_bl_pac_inst(mnemonic):
+			return strip_kernel_or_userPAC(indirect_addr)
+
 		return indirect_addr
 
 	# all other branches just return -1
@@ -3915,6 +3881,9 @@ def print_registers():
 
 	print_cpu_registers(register_format)
 
+prev_disas_addr = 0
+PREV_INSTRUCTION_NUM = CONFIG_DISASSEMBLY_LINE_COUNT // 2 # number of previous execution instruction to be displayed
+
 def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Display current code context.'''
 	# Don't display anything if we're inside Xcode
@@ -3925,6 +3894,7 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	global CONFIG_DISPLAY_STACK_WINDOW
 	global CONFIG_DISPLAY_FLOW_WINDOW
 	global POINTER_SIZE
+	global prev_disas_addr
 
 	debugger.SetAsync(True)
 
@@ -4016,9 +3986,27 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 	color("BOLD")
 	output("[code]\n")
 	color("RESET")
-			
+
+	if not prev_disas_addr:
+		prev_disas_addr = get_current_pc()
+
+	cur_pc = get_current_pc()
+
+	# improve better display disasseble instructions 
+	if cur_pc > prev_disas_addr:
+		# get number of instructions from prev_disas_addr to cur_pc
+		count = get_instruction_count(prev_disas_addr, cur_pc, CONFIG_DISASSEMBLY_LINE_COUNT)
+
+		# update prev_disas_addr with cur_pc when number of previous instruction reach the limit
+		if count > PREV_INSTRUCTION_NUM or count == 0:
+			prev_disas_addr = cur_pc
+
+	elif cur_pc < prev_disas_addr:
+		# in this case cur_pc jump into another location, update prev_disas_addr
+		prev_disas_addr = cur_pc
+
 	# disassemble and add its contents to output inside
-	disassemble(get_current_pc(), CONFIG_DISASSEMBLY_LINE_COUNT)
+	disassemble(prev_disas_addr, CONFIG_DISASSEMBLY_LINE_COUNT)
 		
 	color(COLOR_SEPARATOR)
 	if POINTER_SIZE == 4:
