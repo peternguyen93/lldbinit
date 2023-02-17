@@ -56,7 +56,6 @@ import sys
 import re
 import os
 import time
-import struct
 import argparse
 import subprocess
 import tempfile
@@ -71,7 +70,7 @@ try:
 except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 #
 # User configurable options
@@ -905,7 +904,6 @@ Note: expressions supported, do not use spaces between operators.
 		print(help)
 		return
 	
-	target = get_target()
 	bytes_string = read_mem(int3_addr, 1)
 	if not len(bytes_string):
 		print("[-] error: Failed to read memory at 0x{:x}.".format(int3_addr))
@@ -1319,7 +1317,7 @@ Note: expressions supported, do not use spaces between operators.
 	#output(hexdump(dump_addr, membuff, " ", 16));
 	index = 0
 	while index < 0x100:
-		data = struct.unpack(b"B"*16, membuff[index:index+0x10])
+		data = unpack(b"B"*16, membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1410,7 +1408,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")
 	index = 0
 	while index < 0x100:
-		data = struct.unpack("HHHHHHHH", membuff[index:index+0x10])
+		data = unpack("HHHHHHHH", membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1488,7 +1486,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")
 	index = 0
 	while index < 0x100:
-		(mem0, mem1, mem2, mem3) = struct.unpack("IIII", membuff[index:index+0x10])
+		(mem0, mem1, mem2, mem3) = unpack("IIII", membuff[index:index+0x10])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1563,7 +1561,7 @@ Note: expressions supported, do not use spaces between operators.
 	output("\n")   
 	index = 0
 	while index < 0x100:
-		(mem0, mem1, mem2, mem3) = struct.unpack("QQQQ", membuff[index:index+0x20])
+		(mem0, mem1, mem2, mem3) = unpack("QQQQ", membuff[index:index+0x20])
 		if POINTER_SIZE == 4:
 			szaddr = "0x%.08X" % dump_addr
 		else:
@@ -1607,13 +1605,13 @@ def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObjec
 		if not dword:
 			print("[-] Error evaluating : " + parser.dword)
 			return
-		search_string = struct.pack("I", dword & 0xffffffff)
+		search_string = p32(dword & 0xffffffff)
 	elif parser.qword != None:
 		qword = evaluate(parser.qword)
 		if not qword:
 			print("[-] Error evaluating : " + parser.qword)
 			return
-		search_string = struct.pack("Q", qword & 0xffffffffffffffff)
+		search_string = p64(qword & 0xffffffffffffffff)
 	elif parser.file != None:
 		f = 0
 		try:
@@ -3309,10 +3307,8 @@ def get_indirect_flow_target(source_address: int) -> int:
 	if mnemonic == 'tbz':
 		return 0
 
-	#output("Operand: {}\n".format(operand))
 	# calls into a deferenced memory address
 	if "qword" in operand:
-		#output("dereferenced call\n")
 		deref_addr = 0
 		# first we need to find the address to dereference
 		if '+' in operand:
@@ -3347,8 +3343,6 @@ def get_indirect_flow_target(source_address: int) -> int:
 			- braa [arm64 register], [arm64 register]
 		'''
 
-		# if mnemonic in ('blraa', 'blraaz', 'blrab', 'blrabz') \
-		# 	or mnemonic == 'braa':
 		if is_bl_pac_inst(mnemonic):
 			# handle branch with link register with pointer authentication
 			operand = operand.split(',')[0].strip(' ')
@@ -3358,12 +3352,10 @@ def get_indirect_flow_target(source_address: int) -> int:
 
 	# RIP relative calls
 	elif operand.startswith('0x'):
-		#output("direct call\n")
 		# the disassembler already did the dirty work for us
 		# so we just extract the address
 		x = re.search('(0x[0-9a-z]+)', operand)
 		if x != None:
-			#output("Result {}\n".format(x.group(0)))
 			return int(x.group(1), 16)
 	
 	return 0

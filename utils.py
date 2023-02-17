@@ -93,12 +93,6 @@ class LLDBFrameNotFound(Exception):
 	def __init__(self, *args: object) -> None:
 		super().__init__(*args)
 
-def get_selected_frame(debugger: SBDebugger) -> Optional[SBFrame]:
-	process = debugger.GetSelectedTarget().GetProcess()
-	thread = process.GetSelectedThread()
-	frame = thread.GetSelectedFrame()
-	return frame
-
 def get_debugger() -> SBDebugger:
 	debugger: Optional[SBDebugger] = lldb.debugger
 	assert debugger != None, 'lldb.debugger == None'
@@ -155,10 +149,14 @@ def get_thread() -> Optional[SBThread]:
 
 	return thread
 
+class ParseValueError(Exception):
+	def __init__(self, *args: object) -> None:
+		super().__init__(*args)
+
 def parse_number(str_num: str) -> int:
 	num = -1
 	if not str_num:
-		return -1
+		raise ParseValueError('str_num is empty')
 
 	try:
 		if str_num.startswith('0x') or str_num.startswith('0X'):
@@ -172,7 +170,7 @@ def parse_number(str_num: str) -> int:
 			# parse hex number without prefix
 			num = int(str_num, 16)
 		except ValueError:
-			return -1
+			raise ParseValueError('str_num is not hex number of decimal number')
 
 	return num
 
@@ -200,28 +198,31 @@ def evaluate(command: str) -> int:
 		- hex string -> convert to int
 		- int string -> convert to int
 	'''
-
-	# assume command is lldb command
-	some_express = ESBValue.init_with_expression(command)
-	if some_express.is_valid:
-		return some_express.int_value
-
-	# assume command is variable
+	# assume command is number
 	try:
-		some_var = ESBValue(command)
-		if not some_var.is_valid:
-			# this command is not variable name, try to convert to int
-			return parse_number(command)
-		
-		if some_var.value == None:
-			# this variable name doesn't hold address, get address of this some_var instead
-			return some_var.addr_of()
-
-		return some_var.int_value
-
-	except ESBValueException:
-		# this command is not variable name, try to convert to int
 		return parse_number(command)
+	
+	except ParseValueError:
+		# assume command is variable
+		try:
+			some_var = ESBValue(command)
+			if not some_var.is_valid:
+				# this command is not variable name, assum command is lldb command
+				raise ESBValueException
+			
+			if some_var.value == None:
+				# this variable name doesn't hold address, get address of this some_var instead
+				return some_var.addr_of()
+
+			return some_var.int_value
+
+		except ESBValueException:
+			# assume command is lldb command
+			some_express = ESBValue.init_with_expression(command)
+			if some_express.is_valid:
+				return some_express.int_value
+
+	return 0
 
 def is_i386() -> bool:
 	arch = get_arch()
@@ -1064,7 +1065,7 @@ def cyclic_find(subseq: Union[int, bytes], length: int = 0x10000) -> int:
 	
 	return -1
 
-def hexdump(addr: int, chars: bytes, sep: str, width: int, lines=0xFFFFFFF) -> str:
+def hexdump(addr: int, chars: bytes, sep: str, width: int, lines: int = 0xFFFFFFF) -> str:
 	l = []
 	line_count = 0
 	
@@ -1128,30 +1129,6 @@ def get_connection_protocol() -> str:
 		retval = "core"
 
 	return retval
-
-def address_of(target: SBTarget, sb_value: SBValue) -> int:
-	try:
-		sb_address: SBAddress = sb_value.GetAddress()
-		if sb_address.IsValid():
-			return sb_address.GetLoadAddress(target)
-		return 0xffffffffffffffff
-	except AttributeError:
-		return 0xffffffffffffffff
-
-def cast_address_as_pointer_type(
-		target: SBTarget,
-		var_name: str,
-		address: int,
-		type_name: str) -> Optional[SBValue]:
-
-	sb_type: SBType = target.FindFirstType(type_name)
-	pointer_type: SBType = sb_type.GetPointerType()
-	
-	if pointer_type.IsValid():
-		my_var = target.CreateValueFromExpression(var_name, f'({pointer_type.name}){hex(address)}')
-		return my_var
-
-	return None
 
 def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
 	'''
