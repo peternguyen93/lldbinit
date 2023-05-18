@@ -244,7 +244,11 @@ def is_supported_arch() -> bool:
 	return is_i386() or is_x64() or is_arm() or is_aarch64()
 
 def get_pointer_size() -> int:
-	poisz = evaluate("sizeof(long)")
+	try:
+		poisz = evaluate("sizeof(long)")
+	except LLDBFrameNotFound:
+		target = get_target()
+		poisz = target.GetAddressByteSize()
 	return poisz
 
 # from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
