@@ -2,7 +2,7 @@
 	lldbinit core functions
 	Author : peternguyen
 '''
-from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator
+from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator, Callable
 import typing
 from typing_extensions import Self
 from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, \
@@ -240,6 +240,9 @@ def is_aarch64() -> bool:
 	arch = get_arch()
 	return arch == 'aarch64' or arch.startswith('arm64')
 
+def is_arm64e() -> bool:
+	return get_arch() == 'arm64e'
+
 def is_supported_arch() -> bool:
 	return is_i386() or is_x64() or is_arm() or is_aarch64()
 
@@ -473,9 +476,13 @@ class MacOSVMMapCache(object):
 		process_info = process.GetProcessInfo()
 		if not process_info.IsValid():
 			return ''
+		
+		process_id = process_info.GetProcessID()
+		if process_id == 1:
+			return ''
 
-		cmd = ['vmmap', str(process_info.GetProcessID()), "-interleaved"]
-		proc = Popen(cmd, stdout = PIPE)
+		cmd = ['vmmap', str(process_id), "-interleaved"]
+		proc = Popen(cmd, stdout = PIPE, stderr = PIPE)
 		out, _ = proc.communicate()
 
 		return out.decode('utf-8')
@@ -526,9 +533,13 @@ class MacOSVMMapCache(object):
 		process_info = process.GetProcessInfo()
 		if not process_info.IsValid():
 			return None
+		
+		process_id = process_info.GetProcessID()
+		if process_id == 1:
+			return None
 
-		cmd = ['vmmap', str(process_info.GetProcessID()), hex(address)]
-		proc = Popen(cmd, stdout = PIPE)
+		cmd = ['vmmap', str(process_id), hex(address)]
+		proc = Popen(cmd, stdout = PIPE, stderr=PIPE)
 		out, err = proc.communicate()
 		out = out.decode('utf-8')
 
@@ -605,7 +616,10 @@ def read_u64(addr: int) -> int:
 	
 	return unpack('<Q', arr)[0]
 
-def read_cstr(addr: int, max_size: int=1024) -> bytes:
+def read_cstr(addr: int,
+			max_size: int=1024,
+			filter_func: Optional[Callable[[int], bool]] = None) -> bytes:
+	
 	c_str = bytearray()
 	i = 0
 	
@@ -614,12 +628,20 @@ def read_cstr(addr: int, max_size: int=1024) -> bytes:
 			ch = read_u8(addr + i)
 			if ch == 0x00:
 				break
+			
+			if filter_func and filter_func(ch):
+				break
+			
 			c_str.append(ch)
 			i+=1
+
 		except LLDBMemoryException:
 			break
 
 	return bytes(c_str)
+
+def read_cstr2(addr: int, max_size: int=1024) -> bytes:
+	return read_cstr(addr, max_size, lambda ch: ch < 0x30 or ch > 0x7f)
 
 def write_mem(addr: int, data: bytes) -> int:
 	err = SBError()

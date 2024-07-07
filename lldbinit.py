@@ -324,6 +324,8 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	# xnu load kext
 	ci.HandleCommand("command script add -f lldbinit.cmd_addkext addkext", res)
 
+	ci.HandleCommand("command script add -f lldbinit.cmd_strip_pac strip_pac", res)
+
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_reverse_snapshot vmrevert", res)
@@ -414,6 +416,8 @@ def cmd_lldbinitcmds(debugger: SBDebugger, command: str, result: SBCommandReturn
 		[ 'showports', 'Show all ports of given process name'],
 		[ 'iokit_print', 'Display readable iokit object of given address'],
 		[ 'iokit_type', 'Get type of iokit object of given address'],
+
+		['strip_pac', 'Strip PAC Pointer in ARM64e']
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
@@ -1575,6 +1579,19 @@ Note: expressions supported, do not use spaces between operators.
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
+def cmd_strip_pac(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
+	if get_arch() != 'arm64e':
+		print('This command support only for arm64e')
+		return
+	
+	if not len(command):
+		print('strip_pac <addr>')
+		return
+	
+	pac_addr = evaluate(command)
+	unpac_addr = strip_kernel_or_userPAC(pac_addr)
+	print(f'[+] PACed pointer 0x{pac_addr:X} -> 0x{unpac_addr:X}')
+
 # XXX: help
 def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Search memory'''
@@ -1796,66 +1813,84 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	except IndexError:
 		length = 8
 
-	print(COLORS['RED'] + 'CODE' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['YELLOW'] + 'STACK' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['CYAN'] + 'HEAP' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['MAGENTA'] + 'DATA' + COLORS['RESET'])
+	reset = COLORS['RESET']
+	red = COLORS['RED']
+	yellow = COLORS['YELLOW']
+	cyan = COLORS['CYAN']
+	magenta = COLORS['MAGENTA']
+	bold = COLORS['BOLD']
+
+	print(f'{red}CODE{reset} | ', end='')
+	print(f'{yellow}STACK{reset} | ', end='')
+	print(f'{cyan}HEAP{reset} | ', end='')
+	print(f'{magenta}DATA{reset}')
 
 	cur_target: SBTarget = debugger.GetSelectedTarget()
 	pointer_size = POINTER_SIZE
+	is_arm64e = get_arch() == 'arm64e'
 
-	print(hex(address), length, pointer_size)
+	# print(hex(address), length, pointer_size)
 	memory = read_mem(address, length * pointer_size)
 	if len(memory):
 		# print telescope memory
 		for i in range(length):
 			ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
+			unpack_ptr = ptr_value
 
-			print('{0}{1}{2}:\t'.format(COLORS['CYAN'], hex(address + i*8), COLORS['RESET']), end='')
+			if is_arm64e:
+				# this pointer could be PAC, try to unpack it
+				unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
 
-			if ptr_value and ((ptr_value >> 48) == 0 or (ptr_value >> 48) == 0xffff):
-				module_map = resolve_mem_map(cur_target, ptr_value)
+			print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
+
+			if unpack_ptr and ((unpack_ptr >> 48) == 0 or (unpack_ptr >> 48) == 0xffff):
+				module_map = resolve_mem_map(cur_target, unpack_ptr)
 
 				offset = module_map.offset
-				module_name = module_map.module_name
-				module_name+= '.' + module_map.section_name
+				module_name = f'{module_map.module_name}.{module_map.section_name}'
 
 				if offset > -1:
-					symbol_name = resolve_symbol_name(ptr_value)
+					symbol_name = resolve_symbol_name(unpack_ptr)
 					if module_map.section_name == '__TEXT':
 						# this address is executable
-						color = COLORS['RED']
+						select_color = red
 					else:
-						color = COLORS['MAGENTA']
+						select_color = magenta
 
 					if symbol_name:
-						print('{0}{1}{2} -> {3}"{4}"{5}'.format(color, hex(ptr_value), COLORS['RESET'], 
-																COLORS['BOLD'], symbol_name, COLORS['RESET']))
+						print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}"{symbol_name}"{reset}')
 					else:
-						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
-								color, hex(ptr_value), COLORS['RESET'],
-								COLORS['BOLD'], module_name, hex(module_map.abs_offset), COLORS['RESET']
-							))
-				else:
-					if readable(ptr_value):
-						# check this readable address is on heap or stack or mapped address
-						map_info = MACOS_VMMAP.query_vmmap(ptr_value)
-						if map_info == None:
-							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
+						print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}{module_name}:0x{module_map.abs_offset:X}{reset}')
+
+				elif readable(unpack_ptr):
+					# check this readable address is on heap or stack or mapped address
+					map_info = MACOS_VMMAP.query_vmmap(unpack_ptr)
+					possible_cstr = read_cstr2(unpack_ptr, max_size=1024)
+					select_color = cyan
+
+					if map_info:
+						if map_info.map_type.startswith('Stack'):
+							# is stack address
+							select_color = yellow
+						elif map_info.map_type.startswith('MALLOC'):
+							# heap
+							select_color = cyan
 						else:
-							if map_info.map_type.startswith('Stack'):
-								# is stack address
-								print('{0}{1}{2}'.format(COLORS['YELLOW'], hex(ptr_value), COLORS['RESET']))
-							elif map_info.map_type.startswith('MALLOC'):
-								# heap
-								print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
-							else:
-								# mapped address
-								print('{0}{1}{2}'.format(COLORS['MAGENTA'], hex(ptr_value), COLORS['RESET']))
+							# mapped address
+							select_color = magenta
+				
+					print(f'{select_color}0x{unpack_ptr:X}{reset}', end='')
+					if possible_cstr:
+						out_str = possible_cstr.decode('utf-8')
+						print(f' -> "{out_str}"')
 					else:
-						print(hex(ptr_value))
+						print('')
+					
+				else:
+					print(f'0x{ptr_value:X}')
+			
 			else:
-				print(hex(ptr_value))
+				print(f'0x{ptr_value:X}')
 
 def display_map_info(map_info: MapInfo):
 	perm = map_info.perm.split('/')
