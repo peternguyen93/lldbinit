@@ -417,7 +417,7 @@ def cmd_lldbinitcmds(debugger: SBDebugger, command: str, result: SBCommandReturn
 		[ 'iokit_print', 'Display readable iokit object of given address'],
 		[ 'iokit_type', 'Get type of iokit object of given address'],
 
-		['strip_pac', 'Strip PAC Pointer in ARM64e']
+		['strip_pac', 'Strip PAC Pointer in ARM64e'],
 
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
