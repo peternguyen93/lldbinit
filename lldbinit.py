@@ -1579,11 +1579,7 @@ Note: expressions supported, do not use spaces between operators.
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
-def cmd_strip_pac(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	if get_arch() != 'arm64e':
-		print('This command support only for arm64e')
-		return
-	
+def cmd_strip_pac(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):	
 	if not len(command):
 		print('strip_pac <addr>')
 		return

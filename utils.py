@@ -247,12 +247,8 @@ def is_supported_arch() -> bool:
 	return is_i386() or is_x64() or is_arm() or is_aarch64()
 
 def get_pointer_size() -> int:
-	try:
-		poisz = evaluate("sizeof(long)")
-	except LLDBFrameNotFound:
-		target = get_target()
-		poisz = target.GetAddressByteSize()
-	return poisz
+	target = get_target()
+	return target.GetAddressByteSize()
 
 # from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
 def get_instance_object() -> str:
@@ -692,9 +688,6 @@ def stripPAC(pointer: int, type_size: int) -> int:
 		return pointer & ptr_mask
 
 def strip_kernel_or_userPAC(pointer: int) -> int:
-	if get_arch() != 'arm64e':
-		return pointer
-
 	try:
 		T1Sz = ESBValue('gT1Sz')
 		return stripPAC(pointer, T1Sz.int_value)
@@ -854,10 +847,10 @@ class ESBValue(object):
 	
 	@classmethod
 	def init_with_expression(cls: Type['ESBValue'], expression: str):
-		frame = get_frame()
-		if frame != None:
+		try:
+			frame = get_frame()
 			exp_sbvalue: SBValue = frame.EvaluateExpression(expression)
-		else:
+		except LLDBFrameNotFound:
 			target = get_target()
 			exp_sbvalue: SBValue = target.EvaluateExpression(expression)
 		
