@@ -119,22 +119,6 @@ def get_process() -> SBProcess:
 	'''
 	return get_target().process
 
-def get_frame() -> SBFrame:
-	frame = None
-
-	# SBProcess supports thread iteration -> SBThread
-	for thread_i in get_process():
-		thread: SBThread = thread_i
-		if thread.GetStopReason() != lldb.eStopReasonInvalid:
-			frame = thread.GetFrameAtIndex(0)
-			break
-
-	# this will generate a false positive when we start the target the first time because there's no context yet.
-	if not frame:
-		raise LLDBFrameNotFound("[-] warning: get_frame() failed. Is the target binary started?")
-
-	return frame
-
 def get_thread() -> Optional[SBThread]:
 	thread = None
 
@@ -148,6 +132,25 @@ def get_thread() -> Optional[SBThread]:
 		print("[-] warning: get_thread() failed. Is the target binary started?")
 
 	return thread
+
+def get_frame() -> SBFrame:
+	frame = None
+
+	# # SBProcess supports thread iteration -> SBThread
+	# for thread_i in get_process():
+	# 	thread: SBThread = thread_i
+	# 	if thread.GetStopReason() != lldb.eStopReasonInvalid:
+	# 		frame = thread.GetFrameAtIndex(0)
+	# 		break
+	thread = get_thread()
+	if thread:
+		frame = thread.GetFrameAtIndex(0)
+
+	# this will generate a false positive when we start the target the first time because there's no context yet.
+	if not frame:
+		raise LLDBFrameNotFound("[-] warning: get_frame() failed. Is the target binary started?")
+
+	return frame
 
 class ParseValueError(Exception):
 	def __init__(self, *args: object) -> None:

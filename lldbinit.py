@@ -1825,68 +1825,69 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	pointer_size = POINTER_SIZE
 	is_arm64e = get_arch() == 'arm64e'
 
-	# print(hex(address), length, pointer_size)
 	memory = read_mem(address, length * pointer_size)
-	if len(memory):
-		# print telescope memory
-		for i in range(length):
-			ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
-			unpack_ptr = ptr_value
+	if not len(memory):
+		return
+	
+	# print telescope memory
+	for i in range(length // pointer_size):
+		ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
+		unpack_ptr = ptr_value
 
-			if is_arm64e:
-				# this pointer could be PAC, try to unpack it
-				unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
+		if is_arm64e:
+			# this pointer could be PAC, try to unpack it
+			unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
 
-			print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
+		print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
 
-			if unpack_ptr and ((unpack_ptr >> 48) == 0 or (unpack_ptr >> 48) == 0xffff):
-				module_map = resolve_mem_map(cur_target, unpack_ptr)
+		if unpack_ptr and ((unpack_ptr >> 48) == 0 or (unpack_ptr >> 48) == 0xffff):
+			module_map = resolve_mem_map(cur_target, unpack_ptr)
 
-				offset = module_map.offset
-				module_name = f'{module_map.module_name}.{module_map.section_name}'
+			offset = module_map.offset
+			module_name = f'{module_map.module_name}.{module_map.section_name}'
 
-				if offset > -1:
-					symbol_name = resolve_symbol_name(unpack_ptr)
-					if module_map.section_name == '__TEXT':
-						# this address is executable
-						select_color = red
-					else:
-						select_color = magenta
-
-					if symbol_name:
-						print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}"{symbol_name}"{reset}')
-					else:
-						print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}{module_name}:0x{module_map.abs_offset:X}{reset}')
-
-				elif readable(unpack_ptr):
-					# check this readable address is on heap or stack or mapped address
-					map_info = MACOS_VMMAP.query_vmmap(unpack_ptr)
-					possible_cstr = read_cstr2(unpack_ptr, max_size=1024)
-					select_color = cyan
-
-					if map_info:
-						if map_info.map_type.startswith('Stack'):
-							# is stack address
-							select_color = yellow
-						elif map_info.map_type.startswith('MALLOC'):
-							# heap
-							select_color = cyan
-						else:
-							# mapped address
-							select_color = magenta
-				
-					print(f'{select_color}0x{unpack_ptr:X}{reset}', end='')
-					if possible_cstr:
-						out_str = possible_cstr.decode('utf-8')
-						print(f' -> "{out_str}"')
-					else:
-						print('')
-					
+			if offset > -1:
+				symbol_name = resolve_symbol_name(unpack_ptr)
+				if module_map.section_name == '__TEXT':
+					# this address is executable
+					select_color = red
 				else:
-					print(f'0x{ptr_value:X}')
+					select_color = magenta
+
+				if symbol_name:
+					print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}"{symbol_name}"{reset}')
+				else:
+					print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}{module_name}:0x{module_map.abs_offset:X}{reset}')
+
+			elif readable(unpack_ptr):
+				# check this readable address is on heap or stack or mapped address
+				map_info = MACOS_VMMAP.query_vmmap(unpack_ptr)
+				possible_cstr = read_cstr2(unpack_ptr, max_size=1024)
+				select_color = cyan
+
+				if map_info:
+					if map_info.map_type.startswith('Stack'):
+						# is stack address
+						select_color = yellow
+					elif map_info.map_type.startswith('MALLOC'):
+						# heap
+						select_color = cyan
+					else:
+						# mapped address
+						select_color = magenta
 			
+				print(f'{select_color}0x{unpack_ptr:X}{reset}', end='')
+				if possible_cstr:
+					out_str = possible_cstr.decode('utf-8')
+					print(f' -> "{out_str}"')
+				else:
+					print('')
+				
 			else:
 				print(f'0x{ptr_value:X}')
+		
+		else:
+			print(f'0x{ptr_value:X}')
 
 def display_map_info(map_info: MapInfo):
 	perm = map_info.perm.split('/')
