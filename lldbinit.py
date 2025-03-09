@@ -1807,7 +1807,7 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	try:
 		length = evaluate(args[1])
 	except IndexError:
-		length = 8
+		length = 5 * 8
 
 	reset = COLORS['RESET']
 	red = COLORS['RED']
@@ -1834,13 +1834,13 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 		ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
 		unpack_ptr = ptr_value
 
-		if is_arm64e:
+		if is_paced_addr(ptr_value):
 			# this pointer could be PAC, try to unpack it
 			unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
 
 		print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
 
-		if unpack_ptr and ((unpack_ptr >> 48) == 0 or (unpack_ptr >> 48) == 0xffff):
+		if unpack_ptr:
 			module_map = resolve_mem_map(cur_target, unpack_ptr)
 
 			offset = module_map.offset

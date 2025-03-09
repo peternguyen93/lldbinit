@@ -690,6 +690,12 @@ def stripPAC(pointer: int, type_size: int) -> int:
 	else:
 		return pointer & ptr_mask
 
+def is_paced_addr(addr: int) -> bool:
+	pac_mask = (addr & 0xFFFF000000000000) >> 48
+	if pac_mask and pac_mask != 0xFFFF:
+		return True
+	return False
+
 def strip_kernel_or_userPAC(pointer: int) -> int:
 	try:
 		T1Sz = ESBValue('gT1Sz')
