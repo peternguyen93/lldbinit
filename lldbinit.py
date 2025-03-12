@@ -1805,9 +1805,14 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	address = evaluate(args[0])
 	
 	try:
-		length = evaluate(args[1])
+		n_field = evaluate(args[1]) // POINTER_SIZE
+		if n_field == 0:
+			n_field = 8
+
 	except IndexError:
-		length = 5 * 8
+		n_field = 8
+
+	print(n_field)
 
 	reset = COLORS['RESET']
 	red = COLORS['RED']
@@ -1822,16 +1827,14 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	print(f'{magenta}DATA{reset}')
 
 	cur_target: SBTarget = debugger.GetSelectedTarget()
-	pointer_size = POINTER_SIZE
-	is_arm64e = get_arch() == 'arm64e'
 
-	memory = read_mem(address, length * pointer_size)
+	memory = read_mem(address, n_field * POINTER_SIZE)
 	if not len(memory):
 		return
 	
 	# print telescope memory
-	for i in range(length // pointer_size):
-		ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
+	for i in range(n_field):
+		ptr_value = unpack('<Q', memory[i*POINTER_SIZE:(i + 1)*POINTER_SIZE])[0]
 		unpack_ptr = ptr_value
 
 		if is_paced_addr(ptr_value):
