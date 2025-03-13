@@ -125,8 +125,12 @@ def get_thread() -> Optional[SBThread]:
 	# SBProcess supports thread iteration -> SBThread
 	for thread_i in get_process():
 		thread_i: SBThread = thread_i
-		if thread_i.GetStopReason() != lldb.eStopReasonInvalid:
+		# lldb.eStopReasonInvalid and lldb.eStopReasonNone
+		# these stop reason value show that breakpoint or exception does not reach
+		if thread_i.GetStopReason() >= lldb.eStopReasonTrace:
+			# only get thread with StopReason >= 2 onward
 			thread = thread_i
+			break
 	
 	if not thread:
 		print("[-] warning: get_thread() failed. Is the target binary started?")
