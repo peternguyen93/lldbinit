@@ -2,20 +2,21 @@
 	lldbinit core functions
 	Author : peternguyen
 '''
-from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator, Callable
 import typing
+from typing import List, Dict, Union, Optional, Type, Set, Any, \
+						Generic, TypeVar, Tuple, Iterator, Callable
 from typing_extensions import Self
 from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, \
 				SBValue, SBSymbol, SBError, SBType, SBValueList, SBInstructionList, \
 				SBInstruction, SBModule, SBModuleSpecList, SBCommandInterpreter, \
 				SBCommandReturnObject, SBSection, SBBreakpoint
-import ctypes
-import lldb
-import re
 from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
 from struct import pack, unpack
 from dataclasses import dataclass
+import ctypes
+import lldb
+import re
 import struct
 import platform
 import time
@@ -71,7 +72,7 @@ def get_color_status(addr: int) -> str:
 	if process == None:
 		return ''
 
-	module_map = resolve_mem_map(target, addr)
+	module_map = get_module_info_from_address(target, addr)
 	if module_map.section_name.startswith('__TEXT'):
 		# address is excutable page
 		return "RED"
@@ -346,23 +347,6 @@ def get_module_name_from(address: int) -> str:
 	module: SBModule = sb_addr.module
 	return typing.cast(str, module.file.fullpath)
 
-def read_instructions(start: int, count: int) -> SBInstructionList:
-	target = get_target()
-	sb_start = SBAddress(start, target)
-	return target.ReadInstructions(sb_start, count, 'intel')
-
-def get_instruction_count(start: int, end: int, max_inst: int) -> int:
-	'''
-		Return how many instructions from start address to end address
-	'''
-
-	target = get_target()
-	sb_start = SBAddress(start, target)
-	sb_end = SBAddress(end, target)
-
-	instructions = read_instructions(start, max_inst)
-	return instructions.GetInstructionsCount(sb_start, sb_end, False)
-
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
@@ -386,31 +370,6 @@ def find_module_by_name(target: SBTarget, module_name: str):
 def get_text_section(module: SBModule) -> SBSection:
 	return module.FindSection('__TEXT')
 
-def resolve_symbol_name(address: int) -> str:
-	'''
-		Return a symbold corresponding with an address
-	'''
-
-	target = get_target()
-
-	# because address could less than zero -> force it into unsigned int
-	pz = get_pointer_size()
-	if pz == 4:
-		address = ctypes.c_uint32(address).value
-	elif pz == 8:
-		address = ctypes.c_uint64(address).value
-	
-	try:
-		sb_addr = SBAddress(address, target)
-		addr_sym: SBSymbol = sb_addr.GetSymbol()
-		
-		if addr_sym.IsValid():
-			return addr_sym.GetName()
-	except TypeError:
-		pass
-	
-	return ''
-
 @dataclass
 class ModuleInfo:
 	module_name: str = ''
@@ -419,7 +378,7 @@ class ModuleInfo:
 	offset: int = -1
 	abs_offset: int = -1
 
-def resolve_mem_map(target: SBTarget, addr: int) -> ModuleInfo:
+def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
 	module_info = ModuleInfo()
 
 	# found in load image
@@ -659,7 +618,7 @@ def write_mem(addr: int, data: bytes) -> int:
 	return sz_write
 
 def size_of(struct_name: str) -> int:
-	res = lldb.SBCommandReturnObject()
+	res = SBCommandReturnObject()
 	ci: SBCommandInterpreter = get_debugger().GetCommandInterpreter()
 	ci.HandleCommand(f"p sizeof({struct_name})", res)
 	if res.GetError():
@@ -1130,7 +1089,6 @@ def quotechars(chars: bytes) -> str:
 	return data
 
 def get_uuid_summary(uuid_bytes: bytes) -> str:
-
 	assert len(uuid_bytes) == 16, 'UUID bytes must be 16 in length'
 	data = list(uuid_bytes)
 	return "{a[0]:02X}{a[1]:02X}{a[2]:02X}{a[3]:02X}-{a[4]:02X}{a[5]:02X}-{a[6]:02X}{a[7]:02X}-{a[8]:02X}{a[9]:02X}-{a[10]:02X}{a[11]:02X}{a[12]:02X}{a[13]:02X}{a[14]:02X}{a[15]:02X}".format(a=data)
@@ -1161,39 +1119,6 @@ def get_connection_protocol() -> str:
 		retval = "core"
 
 	return retval
-
-def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
-	'''
-		target: SBTarget
-		target_address : target call address bl <addr>
-		@return : a symbol if error return empty string
-
-		dyld_shared_cache of iOS alway dispatch an other module function by:
-		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
-		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
-		libdispatch:__stubs:00000001800B2E30                 BR              X16
-
-		out goal to resolve symbol for this address
-	'''
-
-	instructions: SBInstructionList = target.ReadInstructions(SBAddress(target_address, target), 3, 'intel')
-	if instructions.GetSize() == 0:
-		return 0
-	
-	instruction_0: SBInstruction = instructions.GetInstructionAtIndex(0)
-	instruction_1: SBInstruction = instructions.GetInstructionAtIndex(1)
-	instruction_2: SBInstruction = instructions.GetInstructionAtIndex(2)
-
-	if instruction_0.GetMnemonic(target) != 'adrp' or instruction_1.GetMnemonic(target) != 'add' or \
-		(instruction_2.GetMnemonic(target) != 'br' and instruction_2.GetOperands(target).startswith('x')):
-		return 0
-	
-	page_shift = int(instruction_0.GetOperands(target).split(',')[1])
-	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
-	call_offset = int(instruction_1.GetOperands(target).split(',')[2].strip(' #'), 16)
-	call_func_ptr = target_page + call_offset 
-
-	return call_func_ptr
 
 ## --------- END --------- ##
 # VMware fusion bridge to take snapshots, restore and create new snapshot in lldb

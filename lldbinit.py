@@ -62,6 +62,9 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
+from symbols import get_symbol_from_address, arm64_resolve_dispatch_function_name,\
+					get_inst_size, get_mnemonic, get_operands, get_instruction_count, \
+					read_instructions, read_instruction, get_module_name
 from xnu import *
 
 try:
@@ -1777,7 +1780,7 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 		return
 
 	cur_target = debugger.GetSelectedTarget()
-	module_map = resolve_mem_map(cur_target, address)
+	module_map = get_module_info_from_address(cur_target, address)
 	if not module_map.module_name:
 		map_info = MACOS_VMMAP.query_vmmap(address)
 		if not map_info:
@@ -1792,7 +1795,7 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 		module_name+= '.' + module_map.section_name
 		offset = module_map.abs_offset
 
-	symbol_name = resolve_symbol_name(address)
+	symbol_name = get_symbol_from_address(address)
 	print(COLORS['YELLOW'] + '- {0} : {1} ({2})'.format(module_name, hex(offset), symbol_name) + COLORS['RESET'])
 
 def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -1811,8 +1814,6 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 
 	except IndexError:
 		n_field = 8
-
-	print(n_field)
 
 	reset = COLORS['RESET']
 	red = COLORS['RED']
@@ -1836,7 +1837,7 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	for i in range(n_field):
 		ptr_value = unpack('<Q', memory[i*POINTER_SIZE:(i + 1)*POINTER_SIZE])[0]
 		unpack_ptr = ptr_value
-
+		
 		if is_paced_addr(ptr_value):
 			# this pointer could be PAC, try to unpack it
 			unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
@@ -1844,13 +1845,13 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 		print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
 
 		if unpack_ptr:
-			module_map = resolve_mem_map(cur_target, unpack_ptr)
+			module_map = get_module_info_from_address(cur_target, unpack_ptr)
 
 			offset = module_map.offset
 			module_name = f'{module_map.module_name}.{module_map.section_name}'
 
 			if offset > -1:
-				symbol_name = resolve_symbol_name(unpack_ptr)
+				symbol_name = get_symbol_from_address(unpack_ptr)
 				if module_map.section_name == '__TEXT':
 					# this address is executable
 					select_color = red
@@ -2249,58 +2250,13 @@ def cmd_DumpInstructions(debugger: SBDebugger, command: str, result: SBCommandRe
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
-# return the instruction mnemonic at input address
-def get_mnemonic(target_addr: int) -> str:
-	target = get_target()
-
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-										SBAddress(target_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return ""
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	# much easier to use the mnemonic output instead of disassembling via cmd line and parse
-	mnemonic = cur_instruction.GetMnemonic(target)
-	return mnemonic
-
-# returns the instruction operands
-def get_operands(source_address: int) -> str:
-	target = get_target()
-	# use current memory address
-	# needs to be this way to workaround SBAddress init bug
-	# src_sbaddr = lldb.SBAddress()
-	# src_sbaddr.load_addr = source_address
-	src_sbaddr = SBAddress(source_address, target)
-	instruction_list: SBInstructionList = target.ReadInstructions(src_sbaddr, 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return ''
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	# return cur_instruction.operands
-	return cur_instruction.GetOperands(target)
-
-# find out the size of an instruction using internal disassembler
-def get_inst_size(target_addr: int) -> int:
-	target = get_target()
-
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-											lldb.SBAddress(target_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return 0
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	return cur_instruction.size
-
 # the disassembler we use on stop context
 # we can customize output here instead of using the cmdline as before and grabbing its output
 def disassemble(start_address: int, count: int):
 	target = get_target()
 
 	# read instructions from start_address
-	instructions_file = read_instructions(start_address, count)
+	instructions_file = read_instructions(target, start_address, count)
 
 	# find out the biggest instruction lenght and mnemonic length
 	# so we can have a uniform output
@@ -2408,15 +2364,15 @@ def disassemble(start_address: int, count: int):
 		dyld_call_addr = 0
 		if is_aarch64() and file_inst.GetMnemonic(target) in ('bl', 'b'):
 			indirect_addr = get_indirect_flow_target(memory_addr)
-			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
-			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
+			dyld_call_addr = arm64_resolve_dispatch_function_name(target, indirect_addr)
+			dyld_resolve_name = get_symbol_from_address(dyld_call_addr)
 		
 		if not dyld_resolve_name:
 			comment:str = file_inst.GetComment(target)
 			if comment:
-				comment = " ; " + comment
+				comment = f" ; {comment}"
 		else:
-			comment = " ; resolve symbol stub: j___" + dyld_resolve_name
+			comment = f" ; resolve symbol stub: j___{dyld_resolve_name}"
 
 		if current_pc == memory_addr:
 			# try to retrieve extra information if it's a branch instruction
@@ -2433,7 +2389,7 @@ def disassemble(start_address: int, count: int):
 					symbol_info = ""
 					# try to solve the symbol for the target address
 					# target_symbol_name = lldb.SBAddress(flow_addr,target).GetSymbol().GetName()
-					target_symbol_name = resolve_symbol_name(flow_addr)
+					target_symbol_name = get_symbol_from_address(flow_addr)
 					# if there is a symbol append to the string otherwise
 					# it will be empty and have no impact in output
 					if target_symbol_name:
@@ -3414,7 +3370,7 @@ def get_ret_address() -> int:
 
 def is_sending_objc_msg() -> bool:
 	call_addr = get_indirect_flow_target(get_current_pc())
-	symbol_name = resolve_symbol_name(call_addr)
+	symbol_name = get_symbol_from_address(call_addr)
 	return symbol_name.startswith("objc_msgSend")
 
 # XXX: x64 only
@@ -3456,14 +3412,14 @@ def display_indirect_flow():
 
 	if ("ret" in mnemonic):
 		indirect_addr = get_ret_address()
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
+		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
 		output("\n")
 		return
 	
 	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
 		# we need to identify the indirect target address
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
+		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3472,7 +3428,7 @@ def display_indirect_flow():
 	
 	if ('br' == mnemonic) or ('bl' == mnemonic) or ('b' == mnemonic):
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
+		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3482,17 +3438,15 @@ def display_indirect_flow():
 # find out the target address of ret, and indirect call and jmp
 def get_indirect_flow_address(src_addr: int) -> int:
 	target = get_target()
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-										SBAddress(src_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
+	inst = read_instruction(target, src_addr)
+	if inst == None:
 		print("[-] error: not enough instructions disassembled.")
 		return -1
 
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	if not cur_instruction.DoesBranch():
+	if not inst.DoesBranch():
 		return -1
 
-	mnemonic: str = cur_instruction.GetMnemonic(target)
+	mnemonic: str = inst.GetMnemonic(target)
 	# if "ret" in cur_instruction.mnemonic:
 	if mnemonic == 'ret': # ret
 		return get_ret_address()
@@ -3506,7 +3460,7 @@ def get_indirect_flow_address(src_addr: int) -> int:
 		mnemonic in ('bl', 'br', 'b', 'blr') or \
 			is_bl_pac_inst(mnemonic):
 		# don't care about RIP relative jumps
-		operands: str = cur_instruction.GetOperands(target)
+		operands: str = inst.GetOperands(target)
 		if operands.startswith('0x'):
 			return -1
 		
@@ -3519,15 +3473,8 @@ def get_indirect_flow_address(src_addr: int) -> int:
 	# all other branches just return -1
 	return -1
 
-# retrieve the module full path name an address belongs to
-def get_module_name(src_addr: int) -> str:
-	target = get_target()
-	src_module: SBModule = SBAddress(src_addr, target).module
-	module_name = src_module.file.fullpath
-	return module_name if module_name != None else ''
-
 def get_objectivec_selector_at(call_addr: int) -> str:
-	symbol_name = resolve_symbol_name(call_addr)
+	symbol_name = get_symbol_from_address(call_addr)
 	if not symbol_name:
 		return ''
 
