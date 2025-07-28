@@ -2,7 +2,6 @@
 	lldbinit core functions
 	Author : peternguyen
 '''
-import typing
 from typing import List, Dict, Union, Optional, Type, Set, Any, \
 						Generic, TypeVar, Tuple, Iterator, Callable
 from typing_extensions import Self
@@ -58,28 +57,6 @@ def p32(value: int) -> bytes:
 
 def p64(value: int) -> bytes:
 	return pack('<Q', value)
-
-# ----------------------------------------------------------
-# Color Related Functions
-# ----------------------------------------------------------
-
-def get_color_status(addr: int) -> str:
-	target = get_target()
-	if target == None:
-		return ''
-
-	process = get_process()
-	if process == None:
-		return ''
-
-	module_map = get_module_info_from_address(target, addr)
-	if module_map.section_name.startswith('__TEXT'):
-		# address is excutable page
-		return "RED"
-	elif module_map.section_name.startswith('__DATA'):
-		return "MAGENTA"
-
-	return "WHITE" if not readable(addr) else "CYAN"
 
 # ----------------------------------------------------------
 # Functions to extract internal and process lldb information
@@ -278,8 +255,8 @@ def get_instance_object() -> str:
 
 # return the int value of a general purpose register
 def get_gp_register(reg_name: str) -> int:
-	if reg_name.lower() == 'x30':
-		reg_name = 'lr'
+	if reg_name.lower() == 'lr':
+		reg_name = 'x30'
 
 	regs = get_registers("general")
 	for reg in regs:
@@ -340,13 +317,6 @@ def get_current_sp() -> int:
 		return 0
 	return sp_addr
 
-def get_module_name_from(address: int) -> str:
-	target = get_target()
-	sb_addr = SBAddress(address, target)
-
-	module: SBModule = sb_addr.module
-	return typing.cast(str, module.file.fullpath)
-
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
@@ -359,7 +329,7 @@ def objc_get_classname(objc: str) -> str:
 	
 	return class_name.str_value
 
-def find_module_by_name(target: SBTarget, module_name: str):
+def find_module_by_name(target: SBTarget, module_name: str) -> Optional[SBModule]:
 	for module in target.modules:
 		module: SBModule = module
 		if module.file.basename == module_name:
@@ -369,42 +339,6 @@ def find_module_by_name(target: SBTarget, module_name: str):
 
 def get_text_section(module: SBModule) -> SBSection:
 	return module.FindSection('__TEXT')
-
-@dataclass
-class ModuleInfo:
-	module_name: str = ''
-	section_name: str = ''
-	perms: int = 0
-	offset: int = -1
-	abs_offset: int = -1
-
-def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
-	module_info = ModuleInfo()
-
-	# found in load image
-	for module in target.modules:
-		module: SBModule
-		absolute_offset = 0
-		for section in module.sections:
-			section: SBSection = section
-			if section.GetLoadAddress(target) == 0xffffffffffffffff:
-				continue
-
-			start_addr = section.GetLoadAddress(target)
-			end_addr = start_addr + section.GetFileByteSize()
-			if start_addr <= addr <= end_addr:
-				module_info = ModuleInfo(
-					module.file.basename,
-					section.GetName(),
-					section.GetPermissions(),
-					addr - start_addr,
-					absolute_offset + (addr - start_addr)
-				)
-				return module_info
-
-			absolute_offset += section.GetFileByteSize()
-
-	return module_info
 
 @dataclass
 class MapInfo(object):

@@ -64,7 +64,8 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
 from symbols import get_symbol_from_address, arm64_resolve_dispatch_function_name,\
 					get_inst_size, get_mnemonic, get_operands, get_instruction_count, \
-					read_instructions, read_instruction, get_module_name
+					read_instructions, read_instruction, get_module_name, \
+					load_custom_symbols, custom_sym_backtrace, get_module_info_from_address
 from xnu import *
 
 try:
@@ -152,6 +153,28 @@ def is_in_Xcode() -> bool:
 		return False
 
 	return True if path_env.startswith('/Applications/Xcode') else False
+
+# ----------------------------------------------------------
+# Color Related Functions
+# ----------------------------------------------------------
+
+def get_color_status(addr: int) -> str:
+	target = get_target()
+	if target == None:
+		return ''
+
+	process = get_process()
+	if process == None:
+		return ''
+
+	module_map = get_module_info_from_address(target, addr)
+	if module_map.section_name.startswith('__TEXT'):
+		# address is excutable page
+		return "RED"
+	elif module_map.section_name.startswith('__DATA'):
+		return "MAGENTA"
+
+	return "WHITE" if not readable(addr) else "CYAN"
 
 def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
@@ -291,6 +314,10 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 		ci.HandleCommand("command script add -f lldbinit.cmd_arm32 arm32", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_arm64 arm64", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_armthumb armthumb", res)
+
+	# custom symbol commands
+	ci.HandleCommand("command script add -f lldbinit.cmd_load_custom_symbols sym_load", res)
+	ci.HandleCommand("command script add -f lldbinit.cmd_sym_backtrace sym_bt", res)
 
 	# xnu kernel debug commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
@@ -1776,7 +1803,7 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 
 	address = evaluate(args[0])
 	if not address:
-		print(COLORS['RED'] + 'Invalid address' + COLORS['RESET'])
+		print(f'{COLORS["RED"]} Invalid address {COLORS["RESET"]}')
 		return
 
 	cur_target = debugger.GetSelectedTarget()
@@ -1784,19 +1811,21 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 	if not module_map.module_name:
 		map_info = MACOS_VMMAP.query_vmmap(address)
 		if not map_info:
-			print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
+			print(f'{COLORS["RED"]} Your address is not match any image map {COLORS["RESET"]}')
 			return
 
 		module_name = map_info.map_type
 		offset = address - map_info.start
 
 	else:
-		module_name = module_map.module_name
-		module_name+= '.' + module_map.section_name
-		offset = module_map.abs_offset
+		module_name = f'{module_map.module_name}.{module_map.section_name}'
+		if module_map.abs_offset < 0:
+			offset = module_map.offset
+		else:
+			offset = module_map.abs_offset
 
 	symbol_name = get_symbol_from_address(address)
-	print(COLORS['YELLOW'] + '- {0} : {1} ({2})'.format(module_name, hex(offset), symbol_name) + COLORS['RESET'])
+	print(f'{COLORS["YELLOW"]} - {module_name} : {offset:X} : {symbol_name} {COLORS["RESET"]}')
 
 def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
@@ -2274,7 +2303,7 @@ def disassemble(start_address: int, count: int):
 	
 	current_pc = get_current_pc()
 	# get info about module if there is a symbol
-	module_name = get_module_name_from(start_address)
+	module_name = get_module_name(start_address)
 
 	count = 0
 	blockstart_sbaddr: Optional[SBAddress] = None
@@ -2399,11 +2428,11 @@ def disassemble(start_address: int, count: int):
 						# remove space for instructions without operands
 						# if mem_inst.operands == "":
 						if mem_inst.GetOperands(target):
-							comment = f'; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
+							comment = f'; {symbol_info}{flow_addr:x} @ {flow_module_name}'
 						else:
-							comment = f' ; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
+							comment = f' ; {symbol_info}{flow_addr:x} @ {flow_module_name}'
 					else:
-						comment+= f' {hex(flow_addr)} @ {flow_module_name}'
+						comment+= f' {flow_addr:x} @ {flow_module_name}'
 				
 				# handle objective C call
 				objc = ''
@@ -2735,6 +2764,30 @@ def cmd_IphoneConnect(debugger: SBDebugger, command: str, result: SBCommandRetur
 		output(res.GetOutput())
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
+
+def cmd_load_custom_symbols(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
+	args = command.split(' ')
+	if len(args) > 1:
+		print('sym_load <custom symbol path>.json')
+		return False
+	
+	symbol_path = Path(args[0])
+	if not symbol_path.exists():
+		print(f'[!] Unable to load symbol path from {symbol_path}')
+		return False
+	
+	if not symbol_path.is_file():
+		print(f'[!] {symbol_path} must be JSON file')
+		return False
+	
+	load_custom_symbols(str(symbol_path))
+	print('[+] Loaded')
+	return True
+
+def cmd_sym_backtrace(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
+	custom_sym_backtrace(debugger)
+	# use custom symbol to show backtrace (bt) commands
+
 
 # xnu kernel debug support command
 def cmd_xnu_kdp_reboot(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -3412,14 +3465,20 @@ def display_indirect_flow():
 
 	if ("ret" in mnemonic):
 		indirect_addr = get_ret_address()
-		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
+
+		if mnemonic.startswith('retab'):
+			# PaC decode this indirect_addr
+			indirect_addr = strip_kernel_or_userPAC(indirect_addr)
+
+		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
 		output("\n")
 		return
 	
 	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
 		# we need to identify the indirect target address
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
+		# output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
+		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3428,7 +3487,8 @@ def display_indirect_flow():
 	
 	if ('br' == mnemonic) or ('bl' == mnemonic) or ('b' == mnemonic):
 		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
+		# output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
+		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
 
 		if is_sending_objc_msg():
 			output("\n")
@@ -3462,7 +3522,7 @@ def get_indirect_flow_address(src_addr: int) -> int:
 		# don't care about RIP relative jumps
 		operands: str = inst.GetOperands(target)
 		if operands.startswith('0x'):
-			return -1
+			return int(operands, 16)
 		
 		indirect_addr = get_indirect_flow_target(src_addr)
 		if is_bl_pac_inst(mnemonic):
@@ -3949,7 +4009,7 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 		display_data()
 		output("\n")
 
-	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64() and is_aarch64():
+	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and (is_x64() or is_aarch64()):
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("---------------------------------------------------------------------------------")
