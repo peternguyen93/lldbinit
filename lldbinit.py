@@ -316,8 +316,10 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 		ci.HandleCommand("command script add -f lldbinit.cmd_armthumb armthumb", res)
 
 	# custom symbol commands
-	ci.HandleCommand("command script add -f lldbinit.cmd_load_custom_symbols sym_load", res)
-	ci.HandleCommand("command script add -f lldbinit.cmd_sym_backtrace sym_bt", res)
+	# merge sym_load and sym_bt into sym <sub command> <args>
+	ci.HandleCommand("command script add -f lldbinit.cmd_custom_sym sym", res)
+	# ci.HandleCommand("command script add -f lldbinit.cmd_load_custom_symbols sym_load", res)
+	# ci.HandleCommand("command script add -f lldbinit.cmd_sym_backtrace sym_bt", res)
 
 	# xnu kernel debug commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
@@ -2765,13 +2767,16 @@ def cmd_IphoneConnect(debugger: SBDebugger, command: str, result: SBCommandRetur
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
-def cmd_load_custom_symbols(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	args = command.split(' ')
-	if len(args) > 1:
-		print('sym_load <custom symbol path>.json')
+def cmd_load_custom_symbols(args: List[str]):
+	'''
+		valid args should be ['load', '<custom symbol path>.json']
+	'''
+
+	if len(args) < 2:
+		print('sym load <custom symbol path>.json')
 		return False
 	
-	symbol_path = Path(args[0])
+	symbol_path = Path(args[1])
 	if not symbol_path.exists():
 		print(f'[!] Unable to load symbol path from {symbol_path}')
 		return False
@@ -2784,10 +2789,32 @@ def cmd_load_custom_symbols(debugger: SBDebugger, command: str, result: SBComman
 	print('[+] Loaded')
 	return True
 
-def cmd_sym_backtrace(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
-	custom_sym_backtrace(debugger)
-	# use custom symbol to show backtrace (bt) commands
+def cmd_custom_sym(
+		debugger: SBDebugger,
+		command: str,
+		result: SBCommandReturnObject,
+		dict: Dict):
+	
+	args = command.split(' ')
+	if len(args) < 2:
+		print('sym <sub_command>')
+		return
+	
+	sub_cmd = args[1]
+	if sub_cmd == 'help':
+		# print help
+		print('- sym bt: load custom symbol: sym load <custom sym>.json')
+		print('- sym bt: use custom symbol to resolve backtrace')
+		return
+	
+	elif sub_cmd == 'load':
+		cmd_load_custom_symbols(args[1:])
+	
+	elif sub_cmd == 'bt':
+		custom_sym_backtrace(debugger)
 
+	else:
+		print(f'[!] Unsupported sym command {sub_cmd}')
 
 # xnu kernel debug support command
 def cmd_xnu_kdp_reboot(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
