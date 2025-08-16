@@ -2800,7 +2800,7 @@ def cmd_custom_sym(
 		print('sym <sub_command>')
 		return
 	
-	sub_cmd = args[1]
+	sub_cmd = args[0]
 	if sub_cmd == 'help':
 		# print help
 		print('- sym bt: load custom symbol: sym load <custom sym>.json')
@@ -2808,7 +2808,7 @@ def cmd_custom_sym(
 		return
 	
 	elif sub_cmd == 'load':
-		cmd_load_custom_symbols(args[1:])
+		cmd_load_custom_symbols(args)
 	
 	elif sub_cmd == 'bt':
 		custom_sym_backtrace(debugger)

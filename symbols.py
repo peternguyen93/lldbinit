@@ -4,7 +4,7 @@
 # Include all APIs that resolve address to debug symbol
 #
 from typing_extensions import Self
-from typing import Optional, TypedDict, Dict, Any, List, TypeVar, Callable
+from typing import Optional, TypedDict, Dict, Any, List, TypeVar, Callable, Optional
 from utils import get_target, get_pointer_size, is_x64, strip_kernel_or_userPAC
 from lldb import SBAddress, SBSymbol, SBTarget, SBInstruction, \
 				SBInstructionList, SBModule, SBDebugger, SBCommandReturnObject, \
@@ -22,7 +22,7 @@ def bisect_left(a: List[T],
 				lo: int=0,
 				hi: Optional[int]=None,
 				*,
-				key: Callable[[Any], Any]=None) -> int:
+				key: Optional[Callable[[Any], Any]]=None) -> int:
 	"""Return the index where to insert item x in list a, assuming a is sorted.
 
 	The return value i is such that all e in a[:i] have e < x, and all e in
@@ -249,18 +249,10 @@ def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
 				sect_name = split_str[1].upper()
 				seg_name = split_str[0]
 			return ModuleInfo(seg_name,
-								sect_name, '',
+								sect_name, 0,
 								addr - segment['start'])
 
 	return module_info
-
-class FunctionSymbols(TypedDict):
-	addr: int
-	func_name: str
-
-class VariableSymbols(TypedDict):
-	addr: int
-	var_name: str
 
 class SegmentSymbol(TypedDict):
 	name: str
@@ -268,8 +260,8 @@ class SegmentSymbol(TypedDict):
 	end: int
 
 class CustomSymbols:
-	funcs: FunctionSymbols
-	variables: VariableSymbols
+	funcs: Dict[int, str]
+	variables: Dict[int, str]
 	segments: List[SegmentSymbol]
 	is_loaded: bool
 
@@ -285,6 +277,7 @@ class CustomSymbols:
 		func_syms = sym_infos['functions']
 		var_syms = sym_infos['variables']
 
+		# json key alway is str,
 		# convert address as str in key to int
 		for key in func_syms:
 			self.funcs[int(key)] = func_syms[key]
