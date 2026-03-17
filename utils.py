@@ -559,7 +559,14 @@ def size_of(struct_name: str) -> int:
 		# struct is not exists
 		return -1
 	
+	# backward lldb version compatible
 	m = re.search(r'\(unsigned long\) \$\d+ = (\d+)\n', res.GetOutput())
+	if m:
+		return int(m.group(1))
+	
+	# newest lldb version doesn't use format
+	# "(unsigned long) $(\d+) = 0x0000000000000018" but it uses (unsigned long) 0x0000000000000018
+	m = re.search(r'\(unsigned long\) (\d+)\n', res.GetOutput())
 	if m:
 		return int(m.group(1))
 	
