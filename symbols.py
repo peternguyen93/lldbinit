@@ -5,7 +5,9 @@
 #
 from typing_extensions import Self
 from typing import Optional, TypedDict, Dict, Any, List, TypeVar, Callable, Optional
-from utils import get_target, get_pointer_size, is_x64, strip_kernel_or_userPAC
+from utils import get_target, get_pointer_size, is_x64, strip_kernel_or_userPAC, \
+				is_aarch64, get_gp_register, get_current_sp, read_pointer_from, \
+				LLDBMemoryException, ESBValue, get_current_pc
 from lldb import SBAddress, SBSymbol, SBTarget, SBInstruction, \
 				SBInstructionList, SBModule, SBDebugger, SBCommandReturnObject, \
 				SBCommandInterpreter, SBSection
@@ -16,6 +18,8 @@ import re
 import json
 
 T = TypeVar('T')
+
+POINTER_SIZE = 8 # assume target architecture is 64 bits
 
 def bisect_left(a: List[T],
 				x: T,
@@ -57,6 +61,35 @@ def bisect_left(a: List[T],
 				hi = mid
 	return lo
 
+def get_ret_address() -> int:
+	global POINTER_SIZE
+
+	if is_aarch64():
+		return get_gp_register('lr')
+
+	stack_addr = get_current_sp()
+	if stack_addr == 0:
+		print("[-] error: Current SP address is empty.")
+		return -1
+	
+	if POINTER_SIZE:
+		POINTER_SIZE = get_pointer_size()
+	
+	try:
+		ret_addr = read_pointer_from(stack_addr, POINTER_SIZE)
+	except LLDBMemoryException:
+		print("[-] error: Failed to read memory at 0x{:x}.".format(stack_addr))
+		return -1
+	
+	return ret_addr
+
+PAC_BL_INSTS = (
+	'blraa', 'blraaz', 'blrab', 'blrabz', 'braa', 'braaz', 'brab', 'brabz'
+)
+
+def is_bl_pac_inst(mnemonic: str) -> bool:
+	return mnemonic in PAC_BL_INSTS
+
 def read_instruction(target: SBTarget, address: int) -> Optional[SBInstruction]:
 	if is_x64():
 		instruction_list: SBInstructionList = target.ReadInstructions(\
@@ -90,6 +123,12 @@ def get_instruction_count(start: int, end: int, max_inst: int) -> int:
 
 	instructions = read_instructions(target, start, max_inst)
 	return instructions.GetInstructionsCount(sb_start, sb_end, False)
+
+def get_current_pc_inst() -> SBInstruction:
+	target = get_target()
+	cur_instruction = read_instruction(target, get_current_pc())
+	assert cur_instruction != None
+	return cur_instruction
 
 # return the instruction mnemonic at input address
 def get_mnemonic(target_addr: int) -> str:
@@ -202,6 +241,150 @@ def get_module_name(src_addr: int) -> str:
 		return CUSTOM_SYMBOLS.query_segment_name(src_addr)
 	
 	return ''
+
+ARM_CALL_INDIRECT_INSTRUCTIONS = ('bl', 'br', 'b', 'blr')
+X86_CALL_INDIRECT_INSTRUCTIONS = ('call', 'jmp')
+
+def get_indirect_dest_from(inst: SBInstruction) -> int:
+	'''
+		Given an instruction, try to resolve indirect call address
+		On success: return address
+		On failure: return 0
+	'''
+	# operand = get_operands(source_address).lower()
+	# mnemonic = get_mnemonic(source_address)
+	target = get_target()
+	mnemonic: str = inst.GetMnemonic(target)
+	operand: str = inst.GetOperands(target)
+
+	if mnemonic not in X86_CALL_INDIRECT_INSTRUCTIONS and \
+		mnemonic not in ARM_CALL_INDIRECT_INSTRUCTIONS and \
+			mnemonic not in PAC_BL_INSTS:
+		return 0
+
+	# calls into a deferenced memory address
+	if "qword" in operand:
+		'''
+			Handle call, jmp in x86 only
+				call [<register> + <offset>]
+				jmp [<register> + <offset>]
+		'''
+		deref_addr = 0
+		# first we need to find the address to dereference
+		if '+' in operand:
+			x = re.search(r'\[([a-z0-9]{2,3} \+ 0x[0-9a-z]+)\]', operand)
+			if x == None:
+				return 0
+
+			value = ESBValue.init_with_expression(f'${x.group(1)}')
+			deref_addr = value.int_value
+			if "rip" in operand:
+				# deref_addr = deref_addr + get_inst_size(source_address)
+				deref_addr = deref_addr + inst.size
+		else:
+			x = re.search(r'\[([a-z0-9]{2,3})\]', operand)
+			if x == None:
+				return 0
+				
+			value = ESBValue.init_with_expression(f'${x.group(1)}')
+			deref_addr = value.int_value
+		
+		# now we can dereference and find the call target
+		return read_pointer_from(deref_addr, POINTER_SIZE)
+
+	# calls into a register included x86_64 and aarch64
+	elif operand.startswith('r') or operand.startswith('e') or operand.startswith('x') or \
+			operand in ('lr', 'sp', 'fp'):
+		'''
+			Handle those instructions:
+			- call [x64 register] (begin with "r")
+			- call [x86 register] (begin with "e")
+			- bl/b [arm64 register] (begin with "x")
+			- blraa [arm64 register], [arm64 register]
+			- braa [arm64 register], [arm64 register]
+		'''
+
+		if is_bl_pac_inst(mnemonic):
+			# handle branch with link register with pointer authentication
+			operand = operand.split(',')[0].strip(' ')
+
+		operand_value = ESBValue.init_with_expression(f'${operand}')
+		return operand_value.int_value
+
+	# RIP relative calls
+	elif operand.startswith('0x'):
+		# the disassembler already did the dirty work for us
+		# so we just extract the address
+		x = re.search(r'(0x[0-9a-z]+)', operand)
+		if x != None:
+			return int(x.group(1), 16)
+	
+	return 0
+
+def get_indirect_address_from(inst: SBInstruction) -> int:
+	'''
+		Given a instruction verify it is indirect call
+		@return: indirect address from instruction
+	'''
+	target = get_target()
+
+	mnemonic: str = inst.GetMnemonic(target)
+	# if "ret" in cur_instruction.mnemonic:
+	if mnemonic == 'ret': # ret
+		print(f'ret: ', get_ret_address())
+		return get_ret_address()
+	
+	if mnemonic == 'retab' or mnemonic == 'retaa':
+		print(f'{mnemonic}: ', get_ret_address())
+		# decode PAC pointer
+		return strip_kernel_or_userPAC(get_ret_address())
+
+	# trace both x86_64 and arm64
+	if mnemonic in X86_CALL_INDIRECT_INSTRUCTIONS or \
+		mnemonic in ARM_CALL_INDIRECT_INSTRUCTIONS or \
+			is_bl_pac_inst(mnemonic):
+		# don't care about RIP relative jumps
+		operands: str = inst.GetOperands(target)
+		if operands.startswith('0x'):
+			return int(operands, 16)
+		
+		# indirect_addr = get_indirect_flow_target(src_addr)
+		indirect_addr = get_indirect_dest_from(inst)
+		if is_bl_pac_inst(mnemonic):
+			return strip_kernel_or_userPAC(indirect_addr)
+
+		return indirect_addr
+
+	# all other branches just return 0
+	return 0
+
+def get_indirect_flow_address(src_addr: int) -> int:
+	'''
+		Wrapper of get_indirect_address_from
+		@args: take src address
+		@return: indirect call address if src_address contains indirect call instructions
+				else return 0
+	'''
+
+	target = get_target()
+	inst = read_instruction(target, src_addr)
+	if inst == None:
+		print("[!] error: not enough instructions disassembled.")
+		return 0
+
+	if not inst.DoesBranch():
+		return 0
+	
+	return get_indirect_address_from(inst)
+
+def get_indirect_flow_dest(src_addr: int) -> int:
+	target = get_target()
+	inst = read_instruction(target, src_addr)
+	if inst == None:
+		print("[!] error: not enough instructions disassembled.")
+		return 0
+	
+	return get_indirect_dest_from(inst)
 
 @dataclass
 class ModuleInfo:

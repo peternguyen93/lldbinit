@@ -64,8 +64,10 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
 from symbols import get_symbol_from_address, arm64_resolve_dispatch_function_name,\
 					get_inst_size, get_mnemonic, get_operands, get_instruction_count, \
-					read_instructions, read_instruction, get_module_name, \
-					load_custom_symbols, custom_sym_backtrace, get_module_info_from_address
+					read_instructions, get_module_name, load_custom_symbols, \
+					custom_sym_backtrace, get_module_info_from_address, \
+					get_current_pc_inst, get_indirect_address_from, get_indirect_flow_address, \
+					get_indirect_flow_dest
 from xnu import *
 
 try:
@@ -103,7 +105,7 @@ CONFIG_LOG_LEVEL = "LOG_NONE"
 # reference: https://lldb.llvm.org/formats.html
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
 DATA_WINDOW_ADDRESS = 0
-POINTER_SIZE = 8 # assume architecture is 64 bits
+# POINTER_SIZE = 8 # assume architecture is 64 bits
 
 old_register: Dict[str, int] = {}
 
@@ -139,7 +141,7 @@ aarch64_registers = [
 	'x16', 'x17', 'x18', 'x19', 
 	'x20', 'x21', 'x22', 'x23', 
 	'x24', 'x25', 'x26', 'x27', 
-	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
+	'x28', 'x29', 'lr', 'sp', 'pc', 'fpcr', 'fpsr'
 ]
 
 MACOS_VMMAP = MacOSVMMapCache()
@@ -318,8 +320,6 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	# custom symbol commands
 	# merge sym_load and sym_bt into sym <sub command> <args>
 	ci.HandleCommand("command script add -f lldbinit.cmd_custom_sym sym", res)
-	# ci.HandleCommand("command script add -f lldbinit.cmd_load_custom_symbols sym_load", res)
-	# ci.HandleCommand("command script add -f lldbinit.cmd_sym_backtrace sym_bt", res)
 
 	# xnu kernel debug commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
@@ -1997,7 +1997,7 @@ def cmd_objc(debugger: SBDebugger, command: str, result: SBCommandReturnObject, 
 		print('objc <register/address> => return class name of objectiveC object')
 		return
 	
-	class_name = objc_get_classname(hex(objc_addr))
+	class_name = objc_get_classname(objc_addr)
 	# print content or structure of this objc object
 	res = lldb.SBCommandReturnObject()
 	ci: SBCommandInterpreter = debugger.GetCommandInterpreter()
@@ -2394,7 +2394,7 @@ def disassemble(start_address: int, count: int):
 		dyld_resolve_name = ''
 		dyld_call_addr = 0
 		if is_aarch64() and file_inst.GetMnemonic(target) in ('bl', 'b'):
-			indirect_addr = get_indirect_flow_target(memory_addr)
+			indirect_addr = get_indirect_flow_dest(memory_addr)
 			dyld_call_addr = arm64_resolve_dispatch_function_name(target, indirect_addr)
 			dyld_resolve_name = get_symbol_from_address(dyld_call_addr)
 		
@@ -3370,67 +3370,6 @@ def get_rip_relative_addr(source_address: int) -> int:
 	rip_call_addr = source_address + inst_size + data
 	return rip_call_addr
 
-# XXX: instead of reading memory we can dereference right away in the evaluation
-def get_indirect_flow_target(source_address: int) -> int:
-	operand = get_operands(source_address).lower()
-	mnemonic = get_mnemonic(source_address)
-
-	if mnemonic == 'tbz':
-		return 0
-
-	# calls into a deferenced memory address
-	if "qword" in operand:
-		deref_addr = 0
-		# first we need to find the address to dereference
-		if '+' in operand:
-			x = re.search(r'\[([a-z0-9]{2,3} \+ 0x[0-9a-z]+)\]', operand)
-			if x == None:
-				return 0
-
-			value = ESBValue.init_with_expression(f'${x.group(1)}')
-			deref_addr = value.int_value
-			if "rip" in operand:
-				deref_addr = deref_addr + get_inst_size(source_address)
-		else:
-			x = re.search(r'\[([a-z0-9]{2,3})\]', operand)
-			if x == None:
-				return 0
-				
-			value = ESBValue.init_with_expression(f'${x.group(1)}')
-			deref_addr = value.int_value
-		
-		# now we can dereference and find the call target
-		return read_pointer_from(deref_addr, POINTER_SIZE)
-
-	# calls into a register included x86_64 and aarch64
-	elif operand.startswith('r') or operand.startswith('e') or operand.startswith('x') or \
-			operand in ('lr', 'sp', 'fp'):
-		'''
-			Handle those instructions:
-			- call [x64 register] (begin with "r")
-			- call [x86 register] (begin with "e")
-			- bl/b [arm64 register] (begin with "x")
-			- blraa [arm64 register], [arm64 register]
-			- braa [arm64 register], [arm64 register]
-		'''
-
-		if is_bl_pac_inst(mnemonic):
-			# handle branch with link register with pointer authentication
-			operand = operand.split(',')[0].strip(' ')
-
-		operand_value = ESBValue.init_with_expression(f'${operand}')
-		return operand_value.int_value
-
-	# RIP relative calls
-	elif operand.startswith('0x'):
-		# the disassembler already did the dirty work for us
-		# so we just extract the address
-		x = re.search('(0x[0-9a-z]+)', operand)
-		if x != None:
-			return int(x.group(1), 16)
-	
-	return 0
-
 def get_ret_address() -> int:
 	if is_aarch64():
 		return get_gp_register('lr')
@@ -3448,18 +3387,13 @@ def get_ret_address() -> int:
 	
 	return ret_addr
 
-def is_sending_objc_msg() -> bool:
-	call_addr = get_indirect_flow_target(get_current_pc())
-	symbol_name = get_symbol_from_address(call_addr)
-	return symbol_name.startswith("objc_msgSend")
-
 # XXX: x64 only
 def display_objc():
 	options = lldb.SBExpressionOptions()
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
 
-	className = objc_get_classname(get_instance_object())
+	className = objc_get_classname(get_objc_instance_object())
 	if not className:
 		return
 	
@@ -3487,78 +3421,23 @@ def display_objc():
 		output(selector[0].decode('utf-8'))
 
 def display_indirect_flow():
-	pc_addr = get_current_pc()
-	mnemonic = get_mnemonic(pc_addr)
+	target = get_target()
+	cur_inst = get_current_pc_inst()
 
-	if ("ret" in mnemonic):
-		indirect_addr = get_ret_address()
+	indirect_addr = get_indirect_address_from(cur_inst)
+	indirect_symbol = ''
+	if indirect_addr:
+		indirect_symbol = get_symbol_from_address(indirect_addr)
 
-		if mnemonic.startswith('retab'):
-			# PaC decode this indirect_addr
-			indirect_addr = strip_kernel_or_userPAC(indirect_addr)
-
-		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
-		output("\n")
+	# mnemonic: str = cur_inst.GetMnemonic(target)
+	if not indirect_symbol:
 		return
 	
-	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
-		# we need to identify the indirect target address
-		indirect_addr = get_indirect_flow_target(pc_addr)
-		# output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
-		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
-
-		if is_sending_objc_msg():
-			output("\n")
-			display_objc()
+	output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
+	if indirect_symbol.startswith('objc_msgSend'):
 		output("\n")
-	
-	if ('br' == mnemonic) or ('bl' == mnemonic) or ('b' == mnemonic):
-		indirect_addr = get_indirect_flow_target(pc_addr)
-		# output("0x%x -> %s" % (indirect_addr, get_symbol_from_address(indirect_addr)))
-		output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
-
-		if is_sending_objc_msg():
-			output("\n")
-			display_objc()
-		output("\n")
-
-# find out the target address of ret, and indirect call and jmp
-def get_indirect_flow_address(src_addr: int) -> int:
-	target = get_target()
-	inst = read_instruction(target, src_addr)
-	if inst == None:
-		print("[-] error: not enough instructions disassembled.")
-		return -1
-
-	if not inst.DoesBranch():
-		return -1
-
-	mnemonic: str = inst.GetMnemonic(target)
-	# if "ret" in cur_instruction.mnemonic:
-	if mnemonic == 'ret': # ret
-		return get_ret_address()
-	
-	if mnemonic == 'retab' or mnemonic == 'retaa':
-		# decode PAC pointer
-		return strip_kernel_or_userPAC(get_ret_address())
-
-	# trace both x86_64 and arm64
-	if mnemonic in ('call', 'jmp') or \
-		mnemonic in ('bl', 'br', 'b', 'blr') or \
-			is_bl_pac_inst(mnemonic):
-		# don't care about RIP relative jumps
-		operands: str = inst.GetOperands(target)
-		if operands.startswith('0x'):
-			return int(operands, 16)
-		
-		indirect_addr = get_indirect_flow_target(src_addr)
-		if is_bl_pac_inst(mnemonic):
-			return strip_kernel_or_userPAC(indirect_addr)
-
-		return indirect_addr
-
-	# all other branches just return -1
-	return -1
+		display_objc()
+	output("\n")
 
 def get_objectivec_selector_at(call_addr: int) -> str:
 	symbol_name = get_symbol_from_address(call_addr)
@@ -3570,40 +3449,56 @@ def get_objectivec_selector_at(call_addr: int) -> str:
 			(symbol_name not in ('objc_alloc', 'objc_opt_class')):
 		return ""
 	
-	options = lldb.SBExpressionOptions()
-	options.SetLanguage(lldb.eLanguageTypeObjC)
-	options.SetTrapExceptions(False)
-
-	classname_command = f'(const char *)object_getClassName((id){get_instance_object()})'
-	expr = ESBValue.init_with_expression(classname_command)
-	if not expr.is_valid:
+	objc = get_objc_instance_object()
+	class_name = objc_get_classname(objc)
+	if not class_name and symbol_name != 'objc_msgSendSuper2':
 		return ''
 	
-	class_name = expr.str_value
-	if class_name:
-		if symbol_name.startswith("objc_msgSend"):
-			if is_x64():
-				selector_addr = get_gp_register("rsi")
-			else:
-				selector_addr = get_gp_register("x1")
-			
-			membuf = read_mem(selector_addr, 0x100)
-			selector = membuf.split(b'\00')
-			if len(selector) != 0:
-				return "[" + class_name + " " + selector[0].decode('utf-8') + "]"
-			else:
-				return "[" + class_name + "]"
-		else:
-			return "{0}({1})".format(symbol_name, class_name)
+	if symbol_name == 'objc_msgSendSuper2':
+		dereference = read_u64(objc)
+		class_name = objc_get_classname(dereference)
 	
-	return ''
+	if not class_name:
+		return ''
+	
+	if is_x64():
+		selector_addr = get_gp_register("rsi")
+	else:
+		selector_addr = get_gp_register("x1")
+
+	'''
+		In modern Objective C, binary usually has another link layout to setup
+		objc_msgSend like dissasembly below, so that we don't need to reply on
+		selector table in register (x1) but linker also imply method after '$'
+		so we can extract
+
+		objc_msgSend$addItemToInventory: @ objCPointer:
+		0x100000da0 (0x100000da0): 41 00 00 90  adrp   x1, 8
+		0x100000da4 (0x100000da4): 21 9c 40 f9  ldr    x1, [x1, #0x138]
+		0x100000da8 (0x100000da8): 30 00 00 90  adrp   x16, 4
+		0x100000dac (0x100000dac): 10 16 40 f9  ldr    x16, [x16, #0x28]
+		->  0x100000db0 (0x100000db0): 00 02 1f d6  br     x16; objc_msgSend 
+	'''
+	selector_name = ''
+	selector_idx = symbol_name.find('$')
+	if selector_idx >= 0:
+		selector_name = symbol_name[selector_idx + 1:]
+	else:
+		membuf = read_mem(selector_addr, 0x100)
+		selector = membuf.split(b'\00')
+		selector_name = selector[0].decode('utf-8')
+	
+	if selector_name:
+		return f'[{class_name} {selector_name}]'
+
+	return f'[{class_name} unknown:]'
 
 def get_objectivec_selector(src_addr: int) -> str:
 
 	if not is_x64() and not is_aarch64():
 		return ''
 
-	call_addr = get_indirect_flow_target(src_addr)
+	call_addr = get_indirect_flow_dest(src_addr)
 	if call_addr == 0:
 		return ''
 		

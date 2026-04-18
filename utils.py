@@ -236,27 +236,33 @@ def get_pointer_size() -> int:
 	return target.GetAddressByteSize()
 
 # from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
-def get_instance_object() -> str:
-	instanceObject = ''
+def get_objc_instance_object() -> int:
+	'''
+		Return first argument of objc_msgSend
+	'''
+	instanceObject = 0
 	if is_i386():
-		instanceObject = '*(id*)($esp+4)'
+		esp = get_gp_register('esp')
+		instanceObject = read_u32(esp + 4)
 	elif is_x64():
-		instanceObject = '(id)$rdi'
+		instanceObject = get_gp_register('rdi')
 	elif is_aarch64():
-		instanceObject = '(id)$x0'
-	# not supported yet
+		instanceObject = get_gp_register('x0')
 	elif is_arm():
-		instanceObject = '(id)$r0'
+		instanceObject = get_gp_register('r0')
+
 	return instanceObject
 
 # -------------------------
 # Register related commands
 # -------------------------
 
-# return the int value of a general purpose register
 def get_gp_register(reg_name: str) -> int:
-	if reg_name.lower() == 'lr':
-		reg_name = 'x30'
+	'''
+		Return value from general purpose registers
+	'''
+	# if reg_name.lower() == 'lr':
+	# 	reg_name = 'x30'
 
 	regs = get_registers("general")
 	for reg in regs:
@@ -321,8 +327,13 @@ def get_current_sp() -> int:
 # LLDB Module functions
 # ----------------------------------------------------------
 
-def objc_get_classname(objc: str) -> str:
-	classname_command = '(const char *)object_getClassName((id){})'.format(objc)
+def objc_get_classname(instanceObjc: int) -> str:
+	# switch interpreter to support ObjectiveC
+	options = lldb.SBExpressionOptions()
+	options.SetLanguage(lldb.eLanguageTypeObjC)
+	options.SetTrapExceptions(False)
+
+	classname_command = f'(const char *)object_getClassName((id)0x{instanceObjc:X})'
 	class_name = ESBValue.init_with_expression(classname_command)
 	if not class_name.is_valid:
 		return ''
@@ -571,13 +582,6 @@ def size_of(struct_name: str) -> int:
 		return int(m.group(1))
 	
 	return -1
-
-PAC_BL_INSTS = (
-	'blraa', 'blraaz', 'blrab', 'blrabz', 'braa', 'braaz', 'brab', 'brabz'
-)
-
-def is_bl_pac_inst(mnemonic: str) -> bool:
-	return mnemonic in PAC_BL_INSTS
 
 SIGN_MASK = 1 << 55
 INT64_MAX = 18446744073709551616
@@ -871,7 +875,9 @@ class ESBValue(object):
 	@property
 	def str_value(self: Self, max_length: int = 1024) -> str:
 		if self.is_expression:
-			summary:str = self.sb_value.GetSummary()
+			summary:Optional[str] = self.sb_value.GetSummary()
+			if summary == None:
+				return ''
 			return summary.strip('"')
 
 		return read_cstr(self.addr_of(), max_length).decode('utf-8')
