@@ -13,6 +13,7 @@ from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
 from struct import pack, unpack
 from dataclasses import dataclass
+from bisect_local import bisect_left
 import ctypes
 import lldb
 import re
@@ -360,17 +361,12 @@ class MapInfo(object):
 	shm: str
 	region: str
 
-	def __hash__(self) -> int:
-		pack_fields = f'{self.map_type}_{self.start}_{self.end}'
-		pack_fields+= f'_{self.perm}_{self.shm}_{self.region}'
-		return hash(pack_fields)
-
 class MacOSVMMapCache(object):
-	caches: Set[MapInfo]
+	caches: List[MapInfo] # sorted MapInfo list by start address
 	is_loaded: bool
 
 	def __init__(self: Self) -> None:
-		self.caches = set()
+		self.caches = []
 		self.is_loaded = False
 		if platform.system() != 'Darwin':
 			print(f'[!] Command vmmap was not supported on {platform.system()}')
@@ -394,19 +390,13 @@ class MacOSVMMapCache(object):
 
 		return out.decode('utf-8')
 	
-	def parse_vmmap_info(self: Self) -> Optional[Set[MapInfo]]:
+	def load_vmmap_info(self: Self):
+		# force update all MapInfo in self.caches
 		vmmap_info = self.get_vmmap_info()
-
-		if self.is_loaded:
-			# no need to reload vmmap again
-			return self.caches
-
-		if not len(self.caches):
-			self.is_loaded = True
-
 		if not vmmap_info:
-			return None
-
+			return
+		
+		self.caches.clear()
 		match_map = re.findall(
 			r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
 			vmmap_info
@@ -415,7 +405,7 @@ class MacOSVMMapCache(object):
 
 		if not match_map:
 			return None
-
+		
 		for m in match_map:
 			# add map_info to caches
 			o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "),
@@ -424,16 +414,28 @@ class MacOSVMMapCache(object):
 								m[3],
 								m[4],
 								m[5].strip())
+			self.caches.append(o_map_info)
+		
+		# sort caches MapInfo by start address
+		sorted(self.caches, key=lambda mapinfo: mapinfo.start)
 
-			self.caches.add(o_map_info)
-
-		return self.caches
+	def cache_load(self: Self, force_reload: bool = False):
+		if not len(self.caches):
+			self.load_vmmap_info()
+		
+		if force_reload:
+			self.load_vmmap_info()
 	
 	def query_vmmap(self: Self, address: int) -> Optional[MapInfo]:
+		if not len(self.caches):
+			self.cache_load()
+
 		# search it in caches
-		for map_info in self.caches:
-			if map_info.start <= address < map_info.end:
-				return map_info
+		tmp_map_info = MapInfo(start=address, end=0, perm='', shm='', region='', map_type='')
+		idx = bisect_left(self.caches, tmp_map_info, key=lambda o: o.start)
+		map_info = self.caches[idx]
+		if map_info.start <= address < map_info.end:
+			return self.caches[idx]
 
 		# if a new vmmap record hasn't found in caches, try to parse it from vmmap
 		process = get_process()
@@ -447,7 +449,7 @@ class MacOSVMMapCache(object):
 
 		cmd = ['vmmap', str(process_id), hex(address)]
 		proc = Popen(cmd, stdout = PIPE, stderr=PIPE)
-		out, err = proc.communicate()
+		out, _ = proc.communicate()
 		out = out.decode('utf-8')
 
 		m = re.search(
@@ -457,10 +459,21 @@ class MacOSVMMapCache(object):
 		if not m:
 			return None
 
+		# update new MapInfo into cache
 		map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
-		self.caches.add(map_info)
+		# idx return from bisect_left is the index to insert value to keep the order
+		idx = bisect_left(self.caches, map_info, key=lambda o: o.start)
+		self.caches.insert(idx, map_info)
 
 		return map_info
+	
+	def get_map_infos_by(self: Self, filter_cb: Callable[[MapInfo], bool]) -> List[MapInfo]:
+		retsult = []
+		for map_info in self.caches:
+			if filter_cb(map_info):
+				retsult.append(map_info)
+		return retsult
+
 
 # ----------------------------------------------------------
 # Memory Read/Write Support

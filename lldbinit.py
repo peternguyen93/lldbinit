@@ -1810,6 +1810,7 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 
 	cur_target = debugger.GetSelectedTarget()
 	module_map = get_module_info_from_address(cur_target, address)
+	base_address = 0
 	if not module_map.module_name:
 		map_info = MACOS_VMMAP.query_vmmap(address)
 		if not map_info:
@@ -1818,16 +1819,18 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 
 		module_name = map_info.map_type
 		offset = address - map_info.start
+		base_address = map_info.start
 
 	else:
 		module_name = f'{module_map.module_name}.{module_map.section_name}'
+		base_address = module_map.start_address
 		if module_map.abs_offset < 0:
 			offset = module_map.offset
 		else:
 			offset = module_map.abs_offset
 
 	symbol_name = get_symbol_from_address(address)
-	print(f'{COLORS["YELLOW"]} - {module_name} : {offset:X} : {symbol_name} {COLORS["RESET"]}')
+	print(f'{COLORS["YELLOW"]} - {module_name}(0x{base_address:X}) : 0x{offset:X} : {symbol_name} {COLORS["RESET"]}')
 
 def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
@@ -1973,12 +1976,11 @@ def cmd_vmmap(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 	addr = evaluate(command)
 	if not addr:
 		# add color or sth like in this text
-		map_infos = MACOS_VMMAP.parse_vmmap_info()
-		if map_infos:
-			for map_info in map_infos:
-				display_map_info(map_info)
+		MACOS_VMMAP.cache_load()
+		for map_info in MACOS_VMMAP.caches:
+			display_map_info(map_info)
 
-			return
+		return	
 
 	map_info = MACOS_VMMAP.query_vmmap(addr)
 	if not map_info:

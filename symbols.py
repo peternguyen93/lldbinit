@@ -12,54 +12,12 @@ from lldb import SBAddress, SBSymbol, SBTarget, SBInstruction, \
 				SBInstructionList, SBModule, SBDebugger, SBCommandReturnObject, \
 				SBCommandInterpreter, SBSection
 from dataclasses import dataclass
-# import bisect
+from bisect_local import bisect_left
 import ctypes
 import re
 import json
 
-T = TypeVar('T')
-
 POINTER_SIZE = 8 # assume target architecture is 64 bits
-
-def bisect_left(a: List[T],
-				x: T,
-				lo: int=0,
-				hi: Optional[int]=None,
-				*,
-				key: Optional[Callable[[Any], Any]]=None) -> int:
-	"""Return the index where to insert item x in list a, assuming a is sorted.
-
-	The return value i is such that all e in a[:i] have e < x, and all e in
-	a[i:] have e >= x.  So if x already appears in the list, a.insert(i, x) will
-	insert just before the leftmost x already there.
-
-	Optional args lo (default 0) and hi (default len(a)) bound the
-	slice of a to be searched.
-
-	A custom key function can be supplied to customize the sort order.
-	"""
-
-	if lo < 0:
-		raise ValueError('lo must be non-negative')
-	if hi is None:
-		hi = len(a)
-	# Note, the comparison uses "<" to match the
-	# __lt__() logic in list.sort() and in heapq.
-	if key is None:
-		while lo < hi:
-			mid = (lo + hi) // 2
-			if a[mid] < x:
-				lo = mid + 1
-			else:
-				hi = mid
-	else:
-		while lo < hi:
-			mid = (lo + hi) // 2
-			if key(a[mid]) < x:
-				lo = mid + 1
-			else:
-				hi = mid
-	return lo
 
 def get_ret_address() -> int:
 	global POINTER_SIZE
@@ -393,6 +351,7 @@ class ModuleInfo:
 	perms: int = 0
 	offset: int = -1
 	abs_offset: int = -1
+	start_address: int = 0
 
 def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
 	module_info = ModuleInfo()
@@ -414,7 +373,8 @@ def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
 					section.GetName(),
 					section.GetPermissions(),
 					addr - start_addr,
-					absolute_offset + (addr - start_addr)
+					absolute_offset + (addr - start_addr),
+					start_addr
 				)
 				return module_info
 
@@ -477,7 +437,8 @@ class CustomSymbols:
 	def query_segment(self: Self, addr: int) -> Optional[SegmentSymbol]:
 		# in python3.9 which is used in LLDB bisec.bisect_left doesn't support key argument
 		# we have to get all start_ea to a list and bisect_left it
-		idx = bisect_left(self.segments, addr, key=lambda o: o['start'])
+		tmp_segment = SegmentSymbol(start=addr, name='tmp', end=0)
+		idx = bisect_left(self.segments, tmp_segment, key=lambda o: o['start'])
 		if idx > 0:
 			return self.segments[idx - 1]
 		return None
