@@ -434,8 +434,9 @@ class MacOSVMMapCache(object):
 		tmp_map_info = MapInfo(start=address, end=0, perm='', shm='', region='', map_type='')
 		idx = bisect_left(self.caches, tmp_map_info, key=lambda o: o.start)
 
-		if idx >= len(self.caches):
-			# need reload vmmap
+		if  0 <= idx < len(self.caches):
+			# make sure index in current caches range
+			# if not use vmmap command line to search and update into cache
 			map_info = self.caches[idx]
 			if map_info.start <= address < map_info.end:
 				return self.caches[idx]
