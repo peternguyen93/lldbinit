@@ -433,9 +433,12 @@ class MacOSVMMapCache(object):
 		# search it in caches
 		tmp_map_info = MapInfo(start=address, end=0, perm='', shm='', region='', map_type='')
 		idx = bisect_left(self.caches, tmp_map_info, key=lambda o: o.start)
-		map_info = self.caches[idx]
-		if map_info.start <= address < map_info.end:
-			return self.caches[idx]
+
+		if idx >= len(self.caches):
+			# need reload vmmap
+			map_info = self.caches[idx]
+			if map_info.start <= address < map_info.end:
+				return self.caches[idx]
 
 		# if a new vmmap record hasn't found in caches, try to parse it from vmmap
 		process = get_process()
@@ -463,7 +466,10 @@ class MacOSVMMapCache(object):
 		map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
 		# idx return from bisect_left is the index to insert value to keep the order
 		idx = bisect_left(self.caches, map_info, key=lambda o: o.start)
-		self.caches.insert(idx, map_info)
+		if idx >= len(self.caches):
+			self.caches.append(map_info)
+		else:
+			self.caches.insert(idx, map_info)
 
 		return map_info
 	
