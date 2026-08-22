@@ -2,9 +2,18 @@
 Small script support xnu kernel debugging
 Author : peternguyen
 '''
-
-from utils import *
+import typing
+from typing import Optional, List, Dict, Tuple, Iterator
+from typing_extensions import Self
+from utils import get_pointer_size, get_uuid_summary, \
+					ESBValue, ESBValueException, size_of, read_mem, \
+					read_u64, write_mem, get_connection_protocol, COLORS, \
+					get_enum_name
+from dataclasses import dataclass
+from symbols import get_symbol_from_address
 from ctypes import *
+from struct import pack, unpack
+from lldb import SBTarget
 import re
 
 kobject_types = [
@@ -335,7 +344,7 @@ def get_iokit_object_type_str(kobject: ESBValue) -> str:
 	vtable_ptr = kobject.cast_to('uintptr_t *').dereference()
 	vtable_func_ptr = ESBValue.init_with_address(vtable_ptr.int_value + 2 * size_of('uintptr_t'), 'uintptr_t *')
 	first_vtable_func = vtable_func_ptr[0].int_value
-	func_desc = resolve_symbol_name(first_vtable_func)
+	func_desc = get_symbol_from_address(first_vtable_func)
 	m = re.match(r'(\w*)::(\w*)', func_desc)
 	if not m:
 		return '<unknow>'
@@ -1373,7 +1382,7 @@ def iokit_get_type(object_address: int) -> str:
 	if not vtable:
 		return ''
 
-	sym_name = resolve_symbol_name(vtable)
+	sym_name = get_symbol_from_address(vtable)
 	m = re.match(r'vtable for (\w*)', sym_name)
 	if not m:
 		return ''

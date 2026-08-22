@@ -62,6 +62,12 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import *
+from symbols import get_symbol_from_address, arm64_resolve_dispatch_function_name,\
+					get_inst_size, get_mnemonic, get_operands, get_instruction_count, \
+					read_instructions, get_module_name, load_custom_symbols, \
+					custom_sym_backtrace, get_module_info_from_address, \
+					get_current_pc_inst, get_indirect_address_from, get_indirect_flow_address, \
+					get_indirect_flow_dest
 from xnu import *
 
 try:
@@ -99,7 +105,7 @@ CONFIG_LOG_LEVEL = "LOG_NONE"
 # reference: https://lldb.llvm.org/formats.html
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
 DATA_WINDOW_ADDRESS = 0
-POINTER_SIZE = 8 # assume architecture is 64 bits
+# POINTER_SIZE = 8 # assume architecture is 64 bits
 
 old_register: Dict[str, int] = {}
 
@@ -135,7 +141,7 @@ aarch64_registers = [
 	'x16', 'x17', 'x18', 'x19', 
 	'x20', 'x21', 'x22', 'x23', 
 	'x24', 'x25', 'x26', 'x27', 
-	'x28', 'x29', 'x30', 'sp', 'pc', 'fpcr', 'fpsr'
+	'x28', 'x29', 'lr', 'sp', 'pc', 'fpcr', 'fpsr'
 ]
 
 MACOS_VMMAP = MacOSVMMapCache()
@@ -149,6 +155,34 @@ def is_in_Xcode() -> bool:
 		return False
 
 	return True if path_env.startswith('/Applications/Xcode') else False
+
+# ----------------------------------------------------------
+# Color Related Functions
+# ----------------------------------------------------------
+
+def get_color_status(addr: int) -> str:
+	target = get_target()
+	if target == None:
+		return ''
+
+	process = get_process()
+	if process == None:
+		return ''
+
+	module_map = get_module_info_from_address(target, addr)
+	if module_map.section_name.startswith('__TEXT'):
+		# address is excutable page
+		return "RED"
+	elif module_map.section_name.startswith('__DATA'):
+		return "MAGENTA"
+
+	return "WHITE" if not readable(addr) else "CYAN"
+
+def frame_file_pc(frame: SBFrame, unused: Any) -> str:
+    addr = frame.GetPCAddress().GetFileAddress()
+    if addr == lldb.LLDB_INVALID_ADDRESS:
+        return "????????"
+    return f"{addr:x}"
 
 def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
@@ -289,6 +323,10 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 		ci.HandleCommand("command script add -f lldbinit.cmd_arm64 arm64", res)
 		ci.HandleCommand("command script add -f lldbinit.cmd_armthumb armthumb", res)
 
+	# custom symbol commands
+	# merge sym_load and sym_bt into sym <sub command> <args>
+	ci.HandleCommand("command script add -f lldbinit.cmd_custom_sym sym", res)
+
 	# xnu kernel debug commands
 	ci.HandleCommand("command script add -f lldbinit.cmd_xnu_showallkexts showallkexts", res)
 	# ci.HandleCommand("command script add -f lldbinit.cmd_xnu_breakpoint kbp", res)
@@ -323,6 +361,8 @@ def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 
 	# xnu load kext
 	ci.HandleCommand("command script add -f lldbinit.cmd_addkext addkext", res)
+
+	ci.HandleCommand("command script add -f lldbinit.cmd_strip_pac strip_pac", res)
 
 	# VMware/Virtualbox support
 	ci.HandleCommand("command script add -f lldbinit.cmd_vm_take_snapshot vmsnapshot", res)
@@ -415,6 +455,8 @@ def cmd_lldbinitcmds(debugger: SBDebugger, command: str, result: SBCommandReturn
 		[ 'iokit_print', 'Display readable iokit object of given address'],
 		[ 'iokit_type', 'Get type of iokit object of given address'],
 
+		['strip_pac', 'Strip PAC Pointer in ARM64e'],
+
 		['vmsnapshot', 'take snapshot for running virtual machine'],
 		['vmrevert', 'reverse snapshot for running virtual machine'],
 		['vmdelsnap', 'delete snapshot of running virtual machine'],
@@ -448,6 +490,7 @@ Available settings:
  stackwin: enable stack window in context display.
  datawin: enable data window in context display, configure address with datawin.
  flow: call targets and objective-c class/methods.
+ frameformat: enable backtrace frame format to include file address.
  """
 
 	global CONFIG_ENABLE_COLOR
@@ -480,6 +523,11 @@ Available settings:
 	elif cmd[0] == "datawin":
 		CONFIG_DISPLAY_DATA_WINDOW = 1
 		print("[+] Enabled data window in context display. Configure address with \'datawin\' cmd.")
+	elif cmd[0] == "frameformat":
+		# upddate backtrace frame format to include file address
+		debugger.HandleCommand("settings set frame-format \"frame #${frame.index}: {${ansi.fg.cyan}${frame.pc}${ansi.normal} (0x${ansi.fg.yellow}${script.frame:lldbinit.frame_file_pc}${ansi.normal}) }{${module.file.basename}{\`}}{${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}{ at ${ansi.fg.cyan}${line.file.basename}${ansi.normal}:${ansi.fg.yellow}${line.number}${ansi.normal}{:${ansi.fg.yellow}${line.column}${ansi.normal}}}${frame.kind}{${function.is-optimized} [opt]}{${function.is-inlined} [inlined]}{${frame.is-artificial} [artificial]}\n\"", res)
+		print("[+] Enabled backtrace frame format to include file address.")
+	
 	elif cmd[0] == "help":
 		print(help)
 	else:
@@ -534,6 +582,10 @@ Available settings:
 	elif cmd[0] == "datawin":
 		CONFIG_DISPLAY_DATA_WINDOW = 0
 		print("[+] Disabled data window in context display.")
+	elif cmd[0] == "frameformat":
+		debugger.HandleCommand("settings set frame-format \"frame #${frame.index}: {${ansi.fg.cyan}${frame.pc}${ansi.normal} }{${module.file.basename}{\`}}{${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}{ at ${ansi.fg.cyan}${line.file.basename}${ansi.normal}:${ansi.fg.yellow}${line.number}${ansi.normal}{:${ansi.fg.yellow}${line.column}${ansi.normal}}}${frame.kind}{${function.is-optimized} [opt]}{${function.is-inlined} [inlined]}{${frame.is-artificial} [artificial]}\n\"", res)
+		print("[+] Disabled backtrace frame format to include file address.")
+	
 	elif cmd[0] == "help":
 		print(help)
 	else:
@@ -1575,6 +1627,15 @@ Note: expressions supported, do not use spaces between operators.
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
+def cmd_strip_pac(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):	
+	if not len(command):
+		print('strip_pac <addr>')
+		return
+	
+	pac_addr = evaluate(command)
+	unpac_addr = strip_kernel_or_userPAC(pac_addr)
+	print(f'[+] PACed pointer 0x{pac_addr:X} -> 0x{unpac_addr:X}')
+
 # XXX: help
 def cmd_findmem(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	'''Search memory'''
@@ -1760,27 +1821,32 @@ def cmd_xinfo(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 
 	address = evaluate(args[0])
 	if not address:
-		print(COLORS['RED'] + 'Invalid address' + COLORS['RESET'])
+		print(f'{COLORS["RED"]} Invalid address {COLORS["RESET"]}')
 		return
 
 	cur_target = debugger.GetSelectedTarget()
-	module_map = resolve_mem_map(cur_target, address)
+	module_map = get_module_info_from_address(cur_target, address)
+	base_address = 0
 	if not module_map.module_name:
 		map_info = MACOS_VMMAP.query_vmmap(address)
 		if not map_info:
-			print(COLORS['RED'] + 'Your address is not match any image map' + COLORS['RESET'])
+			print(f'{COLORS["RED"]} Your address is not match any image map {COLORS["RESET"]}')
 			return
 
 		module_name = map_info.map_type
 		offset = address - map_info.start
+		base_address = map_info.start
 
 	else:
-		module_name = module_map.module_name
-		module_name+= '.' + module_map.section_name
-		offset = module_map.abs_offset
+		module_name = f'{module_map.module_name}.{module_map.section_name}'
+		base_address = module_map.start_address
+		if module_map.abs_offset < 0:
+			offset = module_map.offset
+		else:
+			offset = module_map.abs_offset
 
-	symbol_name = resolve_symbol_name(address)
-	print(COLORS['YELLOW'] + '- {0} : {1} ({2})'.format(module_name, hex(offset), symbol_name) + COLORS['RESET'])
+	symbol_name = get_symbol_from_address(address)
+	print(f'{COLORS["YELLOW"]} - {module_name}(0x{base_address:X}) : 0x{offset:X} : {symbol_name} {COLORS["RESET"]}')
 
 def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	args = command.split(' ')
@@ -1792,70 +1858,90 @@ def cmd_telescope(debugger: SBDebugger, command: str, result: SBCommandReturnObj
 	address = evaluate(args[0])
 	
 	try:
-		length = evaluate(args[1])
-	except IndexError:
-		length = 8
+		n_field = evaluate(args[1]) // POINTER_SIZE
+		if n_field == 0:
+			n_field = 8
 
-	print(COLORS['RED'] + 'CODE' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['YELLOW'] + 'STACK' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['CYAN'] + 'HEAP' + COLORS['RESET'] + ' | ', end='')
-	print(COLORS['MAGENTA'] + 'DATA' + COLORS['RESET'])
+	except IndexError:
+		n_field = 8
+
+	reset = COLORS['RESET']
+	red = COLORS['RED']
+	yellow = COLORS['YELLOW']
+	cyan = COLORS['CYAN']
+	magenta = COLORS['MAGENTA']
+	bold = COLORS['BOLD']
+
+	print(f'{red}CODE{reset} | ', end='')
+	print(f'{yellow}STACK{reset} | ', end='')
+	print(f'{cyan}HEAP{reset} | ', end='')
+	print(f'{magenta}DATA{reset}')
 
 	cur_target: SBTarget = debugger.GetSelectedTarget()
-	pointer_size = POINTER_SIZE
 
-	print(hex(address), length, pointer_size)
-	memory = read_mem(address, length * pointer_size)
-	if len(memory):
-		# print telescope memory
-		for i in range(length):
-			ptr_value = unpack('<Q', memory[i*pointer_size:(i + 1)*pointer_size])[0]
+	memory = read_mem(address, n_field * POINTER_SIZE)
+	if not len(memory):
+		return
+	
+	# print telescope memory
+	for i in range(n_field):
+		ptr_value = unpack('<Q', memory[i*POINTER_SIZE:(i + 1)*POINTER_SIZE])[0]
+		unpack_ptr = ptr_value
+		
+		if is_paced_addr(ptr_value):
+			# this pointer could be PAC, try to unpack it
+			unpack_ptr = strip_kernel_or_userPAC(unpack_ptr)
 
-			print('{0}{1}{2}:\t'.format(COLORS['CYAN'], hex(address + i*8), COLORS['RESET']), end='')
+		print(f'{cyan}0x{(address + i*8):X}{reset}: ', end='')
 
-			if ptr_value and ((ptr_value >> 48) == 0 or (ptr_value >> 48) == 0xffff):
-				module_map = resolve_mem_map(cur_target, ptr_value)
+		if unpack_ptr:
+			module_map = get_module_info_from_address(cur_target, unpack_ptr)
 
-				offset = module_map.offset
-				module_name = module_map.module_name
-				module_name+= '.' + module_map.section_name
+			offset = module_map.offset
+			module_name = f'{module_map.module_name}.{module_map.section_name}'
 
-				if offset > -1:
-					symbol_name = resolve_symbol_name(ptr_value)
-					if module_map.section_name == '__TEXT':
-						# this address is executable
-						color = COLORS['RED']
-					else:
-						color = COLORS['MAGENTA']
-
-					if symbol_name:
-						print('{0}{1}{2} -> {3}"{4}"{5}'.format(color, hex(ptr_value), COLORS['RESET'], 
-																COLORS['BOLD'], symbol_name, COLORS['RESET']))
-					else:
-						print('{0}{1}{2} -> {3}{4}:{5}{6}'.format(
-								color, hex(ptr_value), COLORS['RESET'],
-								COLORS['BOLD'], module_name, hex(module_map.abs_offset), COLORS['RESET']
-							))
+			if offset > -1:
+				symbol_name = get_symbol_from_address(unpack_ptr)
+				if module_map.section_name == '__TEXT':
+					# this address is executable
+					select_color = red
 				else:
-					if readable(ptr_value):
-						# check this readable address is on heap or stack or mapped address
-						map_info = MACOS_VMMAP.query_vmmap(ptr_value)
-						if map_info == None:
-							print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
-						else:
-							if map_info.map_type.startswith('Stack'):
-								# is stack address
-								print('{0}{1}{2}'.format(COLORS['YELLOW'], hex(ptr_value), COLORS['RESET']))
-							elif map_info.map_type.startswith('MALLOC'):
-								# heap
-								print('{0}{1}{2}'.format(COLORS['CYAN'], hex(ptr_value), COLORS['RESET']))
-							else:
-								# mapped address
-								print('{0}{1}{2}'.format(COLORS['MAGENTA'], hex(ptr_value), COLORS['RESET']))
+					select_color = magenta
+
+				if symbol_name:
+					print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}"{symbol_name}"{reset}')
+				else:
+					print(f'{select_color}0x{unpack_ptr:X}{reset} -> {bold}{module_name}:0x{module_map.abs_offset:X}{reset}')
+
+			elif readable(unpack_ptr):
+				# check this readable address is on heap or stack or mapped address
+				map_info = MACOS_VMMAP.query_vmmap(unpack_ptr)
+				possible_cstr = read_cstr2(unpack_ptr, max_size=1024)
+				select_color = cyan
+
+				if map_info:
+					if map_info.map_type.startswith('Stack'):
+						# is stack address
+						select_color = yellow
+					elif map_info.map_type.startswith('MALLOC'):
+						# heap
+						select_color = cyan
 					else:
-						print(hex(ptr_value))
+						# mapped address
+						select_color = magenta
+			
+				print(f'{select_color}0x{unpack_ptr:X}{reset}', end='')
+				if possible_cstr:
+					out_str = possible_cstr.decode('utf-8')
+					print(f' -> "{out_str}"')
+				else:
+					print('')
+				
 			else:
-				print(hex(ptr_value))
+				print(f'0x{ptr_value:X}')
+		
+		else:
+			print(f'0x{ptr_value:X}')
 
 def display_map_info(map_info: MapInfo):
 	perm = map_info.perm.split('/')
@@ -1906,12 +1992,11 @@ def cmd_vmmap(debugger: SBDebugger, command: str, result: SBCommandReturnObject,
 	addr = evaluate(command)
 	if not addr:
 		# add color or sth like in this text
-		map_infos = MACOS_VMMAP.parse_vmmap_info()
-		if map_infos:
-			for map_info in map_infos:
-				display_map_info(map_info)
+		MACOS_VMMAP.cache_load()
+		for map_info in MACOS_VMMAP.caches:
+			display_map_info(map_info)
 
-			return
+		return	
 
 	map_info = MACOS_VMMAP.query_vmmap(addr)
 	if not map_info:
@@ -1930,13 +2015,25 @@ def cmd_objc(debugger: SBDebugger, command: str, result: SBCommandReturnObject, 
 		print('objc <register/address> => return class name of objectiveC object')
 		return
 	
-	class_name = objc_get_classname(hex(objc_addr))
+	class_name = objc_get_classname(objc_addr)
 	# print content or structure of this objc object
 	res = lldb.SBCommandReturnObject()
 	ci: SBCommandInterpreter = debugger.GetCommandInterpreter()
 	ci.HandleCommand(f'p *(({class_name} *){hex(objc_addr)})', res)
 	if res.Succeeded():
 		print(res.GetOutput())
+
+def cmd_cf_obj(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
+	'''
+		Return CoreFoundation object name, information, and more for debugging
+	'''
+
+	objc_addr = evaluate(command)
+	if not objc_addr:
+		print('cf_obj <register/address> => return CoreFoundation object name, information, and more for debugging')
+		return
+
+	# evaluate_expression = evaluate(f'((CFTypeRef)0x{objc_addr:X})')
 
 def cmd_pattern_create(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	pattern_length = parse_number(command) 
@@ -2214,58 +2311,13 @@ def cmd_DumpInstructions(debugger: SBDebugger, command: str, result: SBCommandRe
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
-# return the instruction mnemonic at input address
-def get_mnemonic(target_addr: int) -> str:
-	target = get_target()
-
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-										SBAddress(target_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return ""
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	# much easier to use the mnemonic output instead of disassembling via cmd line and parse
-	mnemonic = cur_instruction.GetMnemonic(target)
-	return mnemonic
-
-# returns the instruction operands
-def get_operands(source_address: int) -> str:
-	target = get_target()
-	# use current memory address
-	# needs to be this way to workaround SBAddress init bug
-	# src_sbaddr = lldb.SBAddress()
-	# src_sbaddr.load_addr = source_address
-	src_sbaddr = SBAddress(source_address, target)
-	instruction_list: SBInstructionList = target.ReadInstructions(src_sbaddr, 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return ''
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	# return cur_instruction.operands
-	return cur_instruction.GetOperands(target)
-
-# find out the size of an instruction using internal disassembler
-def get_inst_size(target_addr: int) -> int:
-	target = get_target()
-
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-											lldb.SBAddress(target_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return 0
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	return cur_instruction.size
-
 # the disassembler we use on stop context
 # we can customize output here instead of using the cmdline as before and grabbing its output
 def disassemble(start_address: int, count: int):
 	target = get_target()
 
 	# read instructions from start_address
-	instructions_file = read_instructions(start_address, count)
+	instructions_file = read_instructions(target, start_address, count)
 
 	# find out the biggest instruction lenght and mnemonic length
 	# so we can have a uniform output
@@ -2283,7 +2335,7 @@ def disassemble(start_address: int, count: int):
 	
 	current_pc = get_current_pc()
 	# get info about module if there is a symbol
-	module_name = get_module_name_from(start_address)
+	module_name = get_module_name(start_address)
 
 	count = 0
 	blockstart_sbaddr: Optional[SBAddress] = None
@@ -2372,16 +2424,16 @@ def disassemble(start_address: int, count: int):
 		dyld_resolve_name = ''
 		dyld_call_addr = 0
 		if is_aarch64() and file_inst.GetMnemonic(target) in ('bl', 'b'):
-			indirect_addr = get_indirect_flow_target(memory_addr)
-			dyld_call_addr = dyld_arm64_resolve_dispatch(target, indirect_addr)
-			dyld_resolve_name = resolve_symbol_name(dyld_call_addr)
+			indirect_addr = get_indirect_flow_dest(memory_addr)
+			dyld_call_addr = arm64_resolve_dispatch_function_name(target, indirect_addr)
+			dyld_resolve_name = get_symbol_from_address(dyld_call_addr)
 		
 		if not dyld_resolve_name:
 			comment:str = file_inst.GetComment(target)
 			if comment:
-				comment = " ; " + comment
+				comment = f" ; {comment}"
 		else:
-			comment = " ; resolve symbol stub: j___" + dyld_resolve_name
+			comment = f" ; resolve symbol stub: j___{dyld_resolve_name}"
 
 		if current_pc == memory_addr:
 			# try to retrieve extra information if it's a branch instruction
@@ -2398,7 +2450,7 @@ def disassemble(start_address: int, count: int):
 					symbol_info = ""
 					# try to solve the symbol for the target address
 					# target_symbol_name = lldb.SBAddress(flow_addr,target).GetSymbol().GetName()
-					target_symbol_name = resolve_symbol_name(flow_addr)
+					target_symbol_name = get_symbol_from_address(flow_addr)
 					# if there is a symbol append to the string otherwise
 					# it will be empty and have no impact in output
 					if target_symbol_name:
@@ -2408,11 +2460,11 @@ def disassemble(start_address: int, count: int):
 						# remove space for instructions without operands
 						# if mem_inst.operands == "":
 						if mem_inst.GetOperands(target):
-							comment = f'; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
+							comment = f'; {symbol_info}{flow_addr:x} @ {flow_module_name}'
 						else:
-							comment = f' ; {symbol_info}{hex(flow_addr)} @ {flow_module_name}'
+							comment = f' ; {symbol_info}{flow_addr:x} @ {flow_module_name}'
 					else:
-						comment+= f' {hex(flow_addr)} @ {flow_module_name}'
+						comment+= f' {flow_addr:x} @ {flow_module_name}'
 				
 				# handle objective C call
 				objc = ''
@@ -2744,6 +2796,55 @@ def cmd_IphoneConnect(debugger: SBDebugger, command: str, result: SBCommandRetur
 		output(res.GetOutput())
 	result.PutCString("".join(GlobalListOutput))
 	result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
+
+def cmd_load_custom_symbols(args: List[str]):
+	'''
+		valid args should be ['load', '<custom symbol path>.json']
+	'''
+
+	if len(args) < 2:
+		print('sym load <custom symbol path>.json')
+		return False
+	
+	symbol_path = Path(args[1])
+	if not symbol_path.exists():
+		print(f'[!] Unable to load symbol path from {symbol_path}')
+		return False
+	
+	if not symbol_path.is_file():
+		print(f'[!] {symbol_path} must be JSON file')
+		return False
+	
+	load_custom_symbols(str(symbol_path))
+	print('[+] Loaded')
+	return True
+
+def cmd_custom_sym(
+		debugger: SBDebugger,
+		command: str,
+		result: SBCommandReturnObject,
+		dict: Dict):
+	
+	args = command.split(' ')
+	if len(args) < 2:
+		print('sym <sub_command>')
+		return
+	
+	sub_cmd = args[0]
+	if sub_cmd == 'help':
+		# print help
+		print('- sym bt: load custom symbol: sym load <custom sym>.json')
+		print('- sym bt: use custom symbol to resolve backtrace')
+		return
+	
+	elif sub_cmd == 'load':
+		cmd_load_custom_symbols(args)
+	
+	elif sub_cmd == 'bt':
+		custom_sym_backtrace(debugger)
+
+	else:
+		print(f'[!] Unsupported sym command {sub_cmd}')
 
 # xnu kernel debug support command
 def cmd_xnu_kdp_reboot(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
@@ -3299,67 +3400,6 @@ def get_rip_relative_addr(source_address: int) -> int:
 	rip_call_addr = source_address + inst_size + data
 	return rip_call_addr
 
-# XXX: instead of reading memory we can dereference right away in the evaluation
-def get_indirect_flow_target(source_address: int) -> int:
-	operand = get_operands(source_address).lower()
-	mnemonic = get_mnemonic(source_address)
-
-	if mnemonic == 'tbz':
-		return 0
-
-	# calls into a deferenced memory address
-	if "qword" in operand:
-		deref_addr = 0
-		# first we need to find the address to dereference
-		if '+' in operand:
-			x = re.search(r'\[([a-z0-9]{2,3} \+ 0x[0-9a-z]+)\]', operand)
-			if x == None:
-				return 0
-
-			value = ESBValue.init_with_expression(f'${x.group(1)}')
-			deref_addr = value.int_value
-			if "rip" in operand:
-				deref_addr = deref_addr + get_inst_size(source_address)
-		else:
-			x = re.search(r'\[([a-z0-9]{2,3})\]', operand)
-			if x == None:
-				return 0
-				
-			value = ESBValue.init_with_expression(f'${x.group(1)}')
-			deref_addr = value.int_value
-		
-		# now we can dereference and find the call target
-		return read_pointer_from(deref_addr, POINTER_SIZE)
-
-	# calls into a register included x86_64 and aarch64
-	elif operand.startswith('r') or operand.startswith('e') or operand.startswith('x') or \
-			operand in ('lr', 'sp', 'fp'):
-		'''
-			Handle those instructions:
-			- call [x64 register] (begin with "r")
-			- call [x86 register] (begin with "e")
-			- bl/b [arm64 register] (begin with "x")
-			- blraa [arm64 register], [arm64 register]
-			- braa [arm64 register], [arm64 register]
-		'''
-
-		if is_bl_pac_inst(mnemonic):
-			# handle branch with link register with pointer authentication
-			operand = operand.split(',')[0].strip(' ')
-
-		operand_value = ESBValue.init_with_expression(f'${operand}')
-		return operand_value.int_value
-
-	# RIP relative calls
-	elif operand.startswith('0x'):
-		# the disassembler already did the dirty work for us
-		# so we just extract the address
-		x = re.search('(0x[0-9a-z]+)', operand)
-		if x != None:
-			return int(x.group(1), 16)
-	
-	return 0
-
 def get_ret_address() -> int:
 	if is_aarch64():
 		return get_gp_register('lr')
@@ -3377,18 +3417,13 @@ def get_ret_address() -> int:
 	
 	return ret_addr
 
-def is_sending_objc_msg() -> bool:
-	call_addr = get_indirect_flow_target(get_current_pc())
-	symbol_name = resolve_symbol_name(call_addr)
-	return symbol_name.startswith("objc_msgSend")
-
 # XXX: x64 only
 def display_objc():
 	options = lldb.SBExpressionOptions()
 	options.SetLanguage(lldb.eLanguageTypeObjC)
 	options.SetTrapExceptions(False)
 
-	className = objc_get_classname(get_instance_object())
+	className = objc_get_classname(get_objc_instance_object())
 	if not className:
 		return
 	
@@ -3416,83 +3451,26 @@ def display_objc():
 		output(selector[0].decode('utf-8'))
 
 def display_indirect_flow():
-	pc_addr = get_current_pc()
-	mnemonic = get_mnemonic(pc_addr)
+	target = get_target()
+	cur_inst = get_current_pc_inst()
 
-	if ("ret" in mnemonic):
-		indirect_addr = get_ret_address()
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
-		output("\n")
+	indirect_addr = get_indirect_address_from(cur_inst)
+	indirect_symbol = ''
+	if indirect_addr:
+		indirect_symbol = get_symbol_from_address(indirect_addr)
+
+	# mnemonic: str = cur_inst.GetMnemonic(target)
+	if not indirect_symbol:
 		return
 	
-	if ("call" == mnemonic) or "callq" == mnemonic or ("jmp" in mnemonic):
-		# we need to identify the indirect target address
-		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
-
-		if is_sending_objc_msg():
-			output("\n")
-			display_objc()
+	output(f"0x{indirect_addr:x} -> {COLORS['RED']}{get_symbol_from_address(indirect_addr)}{COLORS['RESET']}")
+	if indirect_symbol.startswith('objc_msgSend'):
 		output("\n")
-	
-	if ('br' == mnemonic) or ('bl' == mnemonic) or ('b' == mnemonic):
-		indirect_addr = get_indirect_flow_target(pc_addr)
-		output("0x%x -> %s" % (indirect_addr, resolve_symbol_name(indirect_addr)))
-
-		if is_sending_objc_msg():
-			output("\n")
-			display_objc()
-		output("\n")
-
-# find out the target address of ret, and indirect call and jmp
-def get_indirect_flow_address(src_addr: int) -> int:
-	target = get_target()
-	instruction_list: SBInstructionList = target.ReadInstructions(\
-										SBAddress(src_addr, target), 1, 'intel')
-	if instruction_list.GetSize() == 0:
-		print("[-] error: not enough instructions disassembled.")
-		return -1
-
-	cur_instruction: SBInstruction = instruction_list.GetInstructionAtIndex(0)
-	if not cur_instruction.DoesBranch():
-		return -1
-
-	mnemonic: str = cur_instruction.GetMnemonic(target)
-	# if "ret" in cur_instruction.mnemonic:
-	if mnemonic == 'ret': # ret
-		return get_ret_address()
-	
-	if mnemonic == 'retab' or mnemonic == 'retaa':
-		# decode PAC pointer
-		return strip_kernel_or_userPAC(get_ret_address())
-
-	# trace both x86_64 and arm64
-	if mnemonic in ('call', 'jmp') or \
-		mnemonic in ('bl', 'br', 'b', 'blr') or \
-			is_bl_pac_inst(mnemonic):
-		# don't care about RIP relative jumps
-		operands: str = cur_instruction.GetOperands(target)
-		if operands.startswith('0x'):
-			return -1
-		
-		indirect_addr = get_indirect_flow_target(src_addr)
-		if is_bl_pac_inst(mnemonic):
-			return strip_kernel_or_userPAC(indirect_addr)
-
-		return indirect_addr
-
-	# all other branches just return -1
-	return -1
-
-# retrieve the module full path name an address belongs to
-def get_module_name(src_addr: int) -> str:
-	target = get_target()
-	src_module: SBModule = SBAddress(src_addr, target).module
-	module_name = src_module.file.fullpath
-	return module_name if module_name != None else ''
+		display_objc()
+	output("\n")
 
 def get_objectivec_selector_at(call_addr: int) -> str:
-	symbol_name = resolve_symbol_name(call_addr)
+	symbol_name = get_symbol_from_address(call_addr)
 	if not symbol_name:
 		return ''
 
@@ -3501,40 +3479,56 @@ def get_objectivec_selector_at(call_addr: int) -> str:
 			(symbol_name not in ('objc_alloc', 'objc_opt_class')):
 		return ""
 	
-	options = lldb.SBExpressionOptions()
-	options.SetLanguage(lldb.eLanguageTypeObjC)
-	options.SetTrapExceptions(False)
-
-	classname_command = f'(const char *)object_getClassName((id){get_instance_object()})'
-	expr = ESBValue.init_with_expression(classname_command)
-	if not expr.is_valid:
+	objc = get_objc_instance_object()
+	class_name = objc_get_classname(objc)
+	if not class_name and symbol_name != 'objc_msgSendSuper2':
 		return ''
 	
-	class_name = expr.str_value
-	if class_name:
-		if symbol_name.startswith("objc_msgSend"):
-			if is_x64():
-				selector_addr = get_gp_register("rsi")
-			else:
-				selector_addr = get_gp_register("x1")
-			
-			membuf = read_mem(selector_addr, 0x100)
-			selector = membuf.split(b'\00')
-			if len(selector) != 0:
-				return "[" + class_name + " " + selector[0].decode('utf-8') + "]"
-			else:
-				return "[" + class_name + "]"
-		else:
-			return "{0}({1})".format(symbol_name, class_name)
+	if symbol_name == 'objc_msgSendSuper2':
+		dereference = read_u64(objc)
+		class_name = objc_get_classname(dereference)
 	
-	return ''
+	if not class_name:
+		return ''
+	
+	if is_x64():
+		selector_addr = get_gp_register("rsi")
+	else:
+		selector_addr = get_gp_register("x1")
+
+	'''
+		In modern Objective C, binary usually has another link layout to setup
+		objc_msgSend like dissasembly below, so that we don't need to reply on
+		selector table in register (x1) but linker also imply method after '$'
+		so we can extract
+
+		objc_msgSend$addItemToInventory: @ objCPointer:
+		0x100000da0 (0x100000da0): 41 00 00 90  adrp   x1, 8
+		0x100000da4 (0x100000da4): 21 9c 40 f9  ldr    x1, [x1, #0x138]
+		0x100000da8 (0x100000da8): 30 00 00 90  adrp   x16, 4
+		0x100000dac (0x100000dac): 10 16 40 f9  ldr    x16, [x16, #0x28]
+		->  0x100000db0 (0x100000db0): 00 02 1f d6  br     x16; objc_msgSend 
+	'''
+	selector_name = ''
+	selector_idx = symbol_name.find('$')
+	if selector_idx >= 0:
+		selector_name = symbol_name[selector_idx + 1:]
+	else:
+		membuf = read_mem(selector_addr, 0x100)
+		selector = membuf.split(b'\00')
+		selector_name = selector[0].decode('utf-8')
+	
+	if selector_name:
+		return f'[{class_name} {selector_name}]'
+
+	return f'[{class_name} unknown:]'
 
 def get_objectivec_selector(src_addr: int) -> str:
 
 	if not is_x64() and not is_aarch64():
 		return ''
 
-	call_addr = get_indirect_flow_target(src_addr)
+	call_addr = get_indirect_flow_dest(src_addr)
 	if call_addr == 0:
 		return ''
 		
@@ -3967,7 +3961,7 @@ def HandleHookStopOnTarget(debugger: SBDebugger, command: str, result: SBCommand
 		display_data()
 		output("\n")
 
-	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64() and is_aarch64():
+	if CONFIG_DISPLAY_FLOW_WINDOW == 1 and (is_x64() or is_aarch64()):
 		color(COLOR_SEPARATOR)
 		if is_i386() or is_arm():
 			output("---------------------------------------------------------------------------------")

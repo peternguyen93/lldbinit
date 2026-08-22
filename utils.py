@@ -2,20 +2,21 @@
 	lldbinit core functions
 	Author : peternguyen
 '''
-from typing import List, Dict, Union, Optional, Type, Set, Any, Generic, TypeVar, Tuple, Iterator
-import typing
+from typing import List, Dict, Union, Optional, Type, Set, Any, \
+						Generic, TypeVar, Tuple, Iterator, Callable
 from typing_extensions import Self
 from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, \
 				SBValue, SBSymbol, SBError, SBType, SBValueList, SBInstructionList, \
 				SBInstruction, SBModule, SBModuleSpecList, SBCommandInterpreter, \
 				SBCommandReturnObject, SBSection, SBBreakpoint
-import ctypes
-import lldb
-import re
 from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
 from struct import pack, unpack
 from dataclasses import dataclass
+from bisect_local import bisect_left
+import ctypes
+import lldb
+import re
 import struct
 import platform
 import time
@@ -59,28 +60,6 @@ def p64(value: int) -> bytes:
 	return pack('<Q', value)
 
 # ----------------------------------------------------------
-# Color Related Functions
-# ----------------------------------------------------------
-
-def get_color_status(addr: int) -> str:
-	target = get_target()
-	if target == None:
-		return ''
-
-	process = get_process()
-	if process == None:
-		return ''
-
-	module_map = resolve_mem_map(target, addr)
-	if module_map.section_name.startswith('__TEXT'):
-		# address is excutable page
-		return "RED"
-	elif module_map.section_name.startswith('__DATA'):
-		return "MAGENTA"
-
-	return "WHITE" if not readable(addr) else "CYAN"
-
-# ----------------------------------------------------------
 # Functions to extract internal and process lldb information
 # ----------------------------------------------------------
 
@@ -119,35 +98,42 @@ def get_process() -> SBProcess:
 	'''
 	return get_target().process
 
-def get_frame() -> SBFrame:
-	frame = None
-
-	# SBProcess supports thread iteration -> SBThread
-	for thread_i in get_process():
-		thread: SBThread = thread_i
-		if thread.GetStopReason() != lldb.eStopReasonInvalid:
-			frame = thread.GetFrameAtIndex(0)
-			break
-
-	# this will generate a false positive when we start the target the first time because there's no context yet.
-	if not frame:
-		raise LLDBFrameNotFound("[-] warning: get_frame() failed. Is the target binary started?")
-
-	return frame
-
 def get_thread() -> Optional[SBThread]:
 	thread = None
 
 	# SBProcess supports thread iteration -> SBThread
 	for thread_i in get_process():
 		thread_i: SBThread = thread_i
-		if thread_i.GetStopReason() != lldb.eStopReasonInvalid:
+		# lldb.eStopReasonInvalid and lldb.eStopReasonNone
+		# these stop reason value show that breakpoint or exception does not reach
+		if thread_i.GetStopReason() >= lldb.eStopReasonTrace:
+			# only get thread with StopReason >= 2 onward
 			thread = thread_i
+			break
 	
 	if not thread:
 		print("[-] warning: get_thread() failed. Is the target binary started?")
 
 	return thread
+
+def get_frame() -> SBFrame:
+	frame = None
+
+	# # SBProcess supports thread iteration -> SBThread
+	# for thread_i in get_process():
+	# 	thread: SBThread = thread_i
+	# 	if thread.GetStopReason() != lldb.eStopReasonInvalid:
+	# 		frame = thread.GetFrameAtIndex(0)
+	# 		break
+	thread = get_thread()
+	if thread:
+		frame = thread.GetFrameAtIndex(0)
+
+	# this will generate a false positive when we start the target the first time because there's no context yet.
+	if not frame:
+		raise LLDBFrameNotFound("[-] warning: get_frame() failed. Is the target binary started?")
+
+	return frame
 
 class ParseValueError(Exception):
 	def __init__(self, *args: object) -> None:
@@ -240,35 +226,44 @@ def is_aarch64() -> bool:
 	arch = get_arch()
 	return arch == 'aarch64' or arch.startswith('arm64')
 
+def is_arm64e() -> bool:
+	return get_arch() == 'arm64e'
+
 def is_supported_arch() -> bool:
 	return is_i386() or is_x64() or is_arm() or is_aarch64()
 
 def get_pointer_size() -> int:
-	poisz = evaluate("sizeof(long)")
-	return poisz
+	target = get_target()
+	return target.GetAddressByteSize()
 
 # from https://github.com/facebook/chisel/blob/master/fblldbobjcruntimehelpers.py
-def get_instance_object() -> str:
-	instanceObject = ''
+def get_objc_instance_object() -> int:
+	'''
+		Return first argument of objc_msgSend
+	'''
+	instanceObject = 0
 	if is_i386():
-		instanceObject = '*(id*)($esp+4)'
+		esp = get_gp_register('esp')
+		instanceObject = read_u32(esp + 4)
 	elif is_x64():
-		instanceObject = '(id)$rdi'
+		instanceObject = get_gp_register('rdi')
 	elif is_aarch64():
-		instanceObject = '(id)$x0'
-	# not supported yet
+		instanceObject = get_gp_register('x0')
 	elif is_arm():
-		instanceObject = '(id)$r0'
+		instanceObject = get_gp_register('r0')
+
 	return instanceObject
 
 # -------------------------
 # Register related commands
 # -------------------------
 
-# return the int value of a general purpose register
 def get_gp_register(reg_name: str) -> int:
-	if reg_name.lower() == 'x30':
-		reg_name = 'lr'
+	'''
+		Return value from general purpose registers
+	'''
+	# if reg_name.lower() == 'lr':
+	# 	reg_name = 'x30'
 
 	regs = get_registers("general")
 	for reg in regs:
@@ -329,43 +324,24 @@ def get_current_sp() -> int:
 		return 0
 	return sp_addr
 
-def get_module_name_from(address: int) -> str:
-	target = get_target()
-	sb_addr = SBAddress(address, target)
-
-	module: SBModule = sb_addr.module
-	return typing.cast(str, module.file.fullpath)
-
-def read_instructions(start: int, count: int) -> SBInstructionList:
-	target = get_target()
-	sb_start = SBAddress(start, target)
-	return target.ReadInstructions(sb_start, count, 'intel')
-
-def get_instruction_count(start: int, end: int, max_inst: int) -> int:
-	'''
-		Return how many instructions from start address to end address
-	'''
-
-	target = get_target()
-	sb_start = SBAddress(start, target)
-	sb_end = SBAddress(end, target)
-
-	instructions = read_instructions(start, max_inst)
-	return instructions.GetInstructionsCount(sb_start, sb_end, False)
-
 # ----------------------------------------------------------
 # LLDB Module functions
 # ----------------------------------------------------------
 
-def objc_get_classname(objc: str) -> str:
-	classname_command = '(const char *)object_getClassName((id){})'.format(objc)
+def objc_get_classname(instanceObjc: int) -> str:
+	# switch interpreter to support ObjectiveC
+	options = lldb.SBExpressionOptions()
+	options.SetLanguage(lldb.eLanguageTypeObjC)
+	options.SetTrapExceptions(False)
+
+	classname_command = f'(const char *)object_getClassName((id)0x{instanceObjc:X})'
 	class_name = ESBValue.init_with_expression(classname_command)
 	if not class_name.is_valid:
 		return ''
 	
 	return class_name.str_value
 
-def find_module_by_name(target: SBTarget, module_name: str):
+def find_module_by_name(target: SBTarget, module_name: str) -> Optional[SBModule]:
 	for module in target.modules:
 		module: SBModule = module
 		if module.file.basename == module_name:
@@ -376,67 +352,6 @@ def find_module_by_name(target: SBTarget, module_name: str):
 def get_text_section(module: SBModule) -> SBSection:
 	return module.FindSection('__TEXT')
 
-def resolve_symbol_name(address: int) -> str:
-	'''
-		Return a symbold corresponding with an address
-	'''
-
-	target = get_target()
-
-	# because address could less than zero -> force it into unsigned int
-	pz = get_pointer_size()
-	if pz == 4:
-		address = ctypes.c_uint32(address).value
-	elif pz == 8:
-		address = ctypes.c_uint64(address).value
-	
-	try:
-		sb_addr = SBAddress(address, target)
-		addr_sym: SBSymbol = sb_addr.GetSymbol()
-		
-		if addr_sym.IsValid():
-			return addr_sym.GetName()
-	except TypeError:
-		pass
-	
-	return ''
-
-@dataclass
-class ModuleInfo:
-	module_name: str = ''
-	section_name: str = ''
-	perms: int = 0
-	offset: int = -1
-	abs_offset: int = -1
-
-def resolve_mem_map(target: SBTarget, addr: int) -> ModuleInfo:
-	module_info = ModuleInfo()
-
-	# found in load image
-	for module in target.modules:
-		module: SBModule
-		absolute_offset = 0
-		for section in module.sections:
-			section: SBSection = section
-			if section.GetLoadAddress(target) == 0xffffffffffffffff:
-				continue
-
-			start_addr = section.GetLoadAddress(target)
-			end_addr = start_addr + section.GetFileByteSize()
-			if start_addr <= addr <= end_addr:
-				module_info = ModuleInfo(
-					module.file.basename,
-					section.GetName(),
-					section.GetPermissions(),
-					addr - start_addr,
-					absolute_offset + (addr - start_addr)
-				)
-				return module_info
-
-			absolute_offset += section.GetFileByteSize()
-
-	return module_info
-
 @dataclass
 class MapInfo(object):
 	map_type: str
@@ -446,17 +361,12 @@ class MapInfo(object):
 	shm: str
 	region: str
 
-	def __hash__(self) -> int:
-		pack_fields = f'{self.map_type}_{self.start}_{self.end}'
-		pack_fields+= f'_{self.perm}_{self.shm}_{self.region}'
-		return hash(pack_fields)
-
 class MacOSVMMapCache(object):
-	caches: Set[MapInfo]
+	caches: List[MapInfo] # sorted MapInfo list by start address
 	is_loaded: bool
 
 	def __init__(self: Self) -> None:
-		self.caches = set()
+		self.caches = []
 		self.is_loaded = False
 		if platform.system() != 'Darwin':
 			print(f'[!] Command vmmap was not supported on {platform.system()}')
@@ -469,26 +379,24 @@ class MacOSVMMapCache(object):
 		process_info = process.GetProcessInfo()
 		if not process_info.IsValid():
 			return ''
+		
+		process_id = process_info.GetProcessID()
+		if process_id == 1:
+			return ''
 
-		cmd = ['vmmap', str(process_info.GetProcessID()), "-interleaved"]
-		proc = Popen(cmd, stdout = PIPE)
+		cmd = ['vmmap', str(process_id), "-interleaved"]
+		proc = Popen(cmd, stdout = PIPE, stderr = PIPE)
 		out, _ = proc.communicate()
 
 		return out.decode('utf-8')
 	
-	def parse_vmmap_info(self: Self) -> Optional[Set[MapInfo]]:
+	def load_vmmap_info(self: Self):
+		# force update all MapInfo in self.caches
 		vmmap_info = self.get_vmmap_info()
-
-		if self.is_loaded:
-			# no need to reload vmmap again
-			return self.caches
-
-		if not len(self.caches):
-			self.is_loaded = True
-
 		if not vmmap_info:
-			return None
-
+			return
+		
+		self.caches.clear()
 		match_map = re.findall(
 			r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
 			vmmap_info
@@ -497,7 +405,7 @@ class MacOSVMMapCache(object):
 
 		if not match_map:
 			return None
-
+		
 		for m in match_map:
 			# add map_info to caches
 			o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "),
@@ -506,26 +414,46 @@ class MacOSVMMapCache(object):
 								m[3],
 								m[4],
 								m[5].strip())
+			self.caches.append(o_map_info)
+		
+		# sort caches MapInfo by start address
+		sorted(self.caches, key=lambda mapinfo: mapinfo.start)
 
-			self.caches.add(o_map_info)
-
-		return self.caches
+	def cache_load(self: Self, force_reload: bool = False):
+		if not len(self.caches):
+			self.load_vmmap_info()
+		
+		if force_reload:
+			self.load_vmmap_info()
 	
 	def query_vmmap(self: Self, address: int) -> Optional[MapInfo]:
+		if not len(self.caches):
+			self.cache_load()
+
 		# search it in caches
-		for map_info in self.caches:
+		tmp_map_info = MapInfo(start=address, end=0, perm='', shm='', region='', map_type='')
+		idx = bisect_left(self.caches, tmp_map_info, key=lambda o: o.start)
+
+		if  0 <= idx < len(self.caches):
+			# make sure index in current caches range
+			# if not use vmmap command line to search and update into cache
+			map_info = self.caches[idx]
 			if map_info.start <= address < map_info.end:
-				return map_info
+				return self.caches[idx]
 
 		# if a new vmmap record hasn't found in caches, try to parse it from vmmap
 		process = get_process()
 		process_info = process.GetProcessInfo()
 		if not process_info.IsValid():
 			return None
+		
+		process_id = process_info.GetProcessID()
+		if process_id == 1:
+			return None
 
-		cmd = ['vmmap', str(process_info.GetProcessID()), hex(address)]
-		proc = Popen(cmd, stdout = PIPE)
-		out, err = proc.communicate()
+		cmd = ['vmmap', str(process_id), hex(address)]
+		proc = Popen(cmd, stdout = PIPE, stderr=PIPE)
+		out, _ = proc.communicate()
 		out = out.decode('utf-8')
 
 		m = re.search(
@@ -535,10 +463,24 @@ class MacOSVMMapCache(object):
 		if not m:
 			return None
 
+		# update new MapInfo into cache
 		map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
-		self.caches.add(map_info)
+		# idx return from bisect_left is the index to insert value to keep the order
+		idx = bisect_left(self.caches, map_info, key=lambda o: o.start)
+		if idx >= len(self.caches):
+			self.caches.append(map_info)
+		else:
+			self.caches.insert(idx, map_info)
 
 		return map_info
+	
+	def get_map_infos_by(self: Self, filter_cb: Callable[[MapInfo], bool]) -> List[MapInfo]:
+		retsult = []
+		for map_info in self.caches:
+			if filter_cb(map_info):
+				retsult.append(map_info)
+		return retsult
+
 
 # ----------------------------------------------------------
 # Memory Read/Write Support
@@ -601,7 +543,10 @@ def read_u64(addr: int) -> int:
 	
 	return unpack('<Q', arr)[0]
 
-def read_cstr(addr: int, max_size: int=1024) -> bytes:
+def read_cstr(addr: int,
+			max_size: int=1024,
+			filter_func: Optional[Callable[[int], bool]] = None) -> bytes:
+	
 	c_str = bytearray()
 	i = 0
 	
@@ -610,12 +555,20 @@ def read_cstr(addr: int, max_size: int=1024) -> bytes:
 			ch = read_u8(addr + i)
 			if ch == 0x00:
 				break
+			
+			if filter_func and filter_func(ch):
+				break
+			
 			c_str.append(ch)
 			i+=1
+
 		except LLDBMemoryException:
 			break
 
 	return bytes(c_str)
+
+def read_cstr2(addr: int, max_size: int=1024) -> bytes:
+	return read_cstr(addr, max_size, lambda ch: ch < 0x30 or ch > 0x7f)
 
 def write_mem(addr: int, data: bytes) -> int:
 	err = SBError()
@@ -630,25 +583,25 @@ def write_mem(addr: int, data: bytes) -> int:
 	return sz_write
 
 def size_of(struct_name: str) -> int:
-	res = lldb.SBCommandReturnObject()
+	res = SBCommandReturnObject()
 	ci: SBCommandInterpreter = get_debugger().GetCommandInterpreter()
 	ci.HandleCommand(f"p sizeof({struct_name})", res)
 	if res.GetError():
 		# struct is not exists
 		return -1
 	
+	# backward lldb version compatible
 	m = re.search(r'\(unsigned long\) \$\d+ = (\d+)\n', res.GetOutput())
 	if m:
 		return int(m.group(1))
 	
+	# newest lldb version doesn't use format
+	# "(unsigned long) $(\d+) = 0x0000000000000018" but it uses (unsigned long) 0x0000000000000018
+	m = re.search(r'\(unsigned long\) (\d+)\n', res.GetOutput())
+	if m:
+		return int(m.group(1))
+	
 	return -1
-
-PAC_BL_INSTS = (
-	'blraa', 'blraaz', 'blrab', 'blrabz', 'braa', 'braaz', 'brab', 'brabz'
-)
-
-def is_bl_pac_inst(mnemonic: str) -> bool:
-	return mnemonic in PAC_BL_INSTS
 
 SIGN_MASK = 1 << 55
 INT64_MAX = 18446744073709551616
@@ -665,10 +618,13 @@ def stripPAC(pointer: int, type_size: int) -> int:
 	else:
 		return pointer & ptr_mask
 
-def strip_kernel_or_userPAC(pointer: int) -> int:
-	if get_arch() != 'arm64e':
-		return pointer
+def is_paced_addr(addr: int) -> bool:
+	pac_mask = (addr & 0xFFFF000000000000) >> 48
+	if pac_mask and pac_mask != 0xFFFF:
+		return True
+	return False
 
+def strip_kernel_or_userPAC(pointer: int) -> int:
 	try:
 		T1Sz = ESBValue('gT1Sz')
 		return stripPAC(pointer, T1Sz.int_value)
@@ -828,10 +784,10 @@ class ESBValue(object):
 	
 	@classmethod
 	def init_with_expression(cls: Type['ESBValue'], expression: str):
-		frame = get_frame()
-		if frame != None:
+		try:
+			frame = get_frame()
 			exp_sbvalue: SBValue = frame.EvaluateExpression(expression)
-		else:
+		except LLDBFrameNotFound:
 			target = get_target()
 			exp_sbvalue: SBValue = target.EvaluateExpression(expression)
 		
@@ -939,7 +895,9 @@ class ESBValue(object):
 	@property
 	def str_value(self: Self, max_length: int = 1024) -> str:
 		if self.is_expression:
-			summary:str = self.sb_value.GetSummary()
+			summary:Optional[str] = self.sb_value.GetSummary()
+			if summary == None:
+				return ''
 			return summary.strip('"')
 
 		return read_cstr(self.addr_of(), max_length).decode('utf-8')
@@ -1098,7 +1056,6 @@ def quotechars(chars: bytes) -> str:
 	return data
 
 def get_uuid_summary(uuid_bytes: bytes) -> str:
-
 	assert len(uuid_bytes) == 16, 'UUID bytes must be 16 in length'
 	data = list(uuid_bytes)
 	return "{a[0]:02X}{a[1]:02X}{a[2]:02X}{a[3]:02X}-{a[4]:02X}{a[5]:02X}-{a[6]:02X}{a[7]:02X}-{a[8]:02X}{a[9]:02X}-{a[10]:02X}{a[11]:02X}{a[12]:02X}{a[13]:02X}{a[14]:02X}{a[15]:02X}".format(a=data)
@@ -1129,39 +1086,6 @@ def get_connection_protocol() -> str:
 		retval = "core"
 
 	return retval
-
-def dyld_arm64_resolve_dispatch(target: SBTarget, target_address: int) -> int:
-	'''
-		target: SBTarget
-		target_address : target call address bl <addr>
-		@return : a symbol if error return empty string
-
-		dyld_shared_cache of iOS alway dispatch an other module function by:
-		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
-		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
-		libdispatch:__stubs:00000001800B2E30                 BR              X16
-
-		out goal to resolve symbol for this address
-	'''
-
-	instructions: SBInstructionList = target.ReadInstructions(SBAddress(target_address, target), 3, 'intel')
-	if instructions.GetSize() == 0:
-		return 0
-	
-	instruction_0: SBInstruction = instructions.GetInstructionAtIndex(0)
-	instruction_1: SBInstruction = instructions.GetInstructionAtIndex(1)
-	instruction_2: SBInstruction = instructions.GetInstructionAtIndex(2)
-
-	if instruction_0.GetMnemonic(target) != 'adrp' or instruction_1.GetMnemonic(target) != 'add' or \
-		(instruction_2.GetMnemonic(target) != 'br' and instruction_2.GetOperands(target).startswith('x')):
-		return 0
-	
-	page_shift = int(instruction_0.GetOperands(target).split(',')[1])
-	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
-	call_offset = int(instruction_1.GetOperands(target).split(',')[2].strip(' #'), 16)
-	call_func_ptr = target_page + call_offset 
-
-	return call_func_ptr
 
 ## --------- END --------- ##
 # VMware fusion bridge to take snapshots, restore and create new snapshot in lldb
