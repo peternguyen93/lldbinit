@@ -178,6 +178,12 @@ def get_color_status(addr: int) -> str:
 
 	return "WHITE" if not readable(addr) else "CYAN"
 
+def frame_file_pc(frame: SBFrame, unused: Any) -> str:
+    addr = frame.GetPCAddress().GetFileAddress()
+    if addr == lldb.LLDB_INVALID_ADDRESS:
+        return "????????"
+    return f"{addr:x}"
+
 def __lldb_init_module(debugger: SBDebugger, internal_dict: Dict):
 	''' we can execute commands using debugger.HandleCommand which makes all output to default
 	lldb console. With GetCommandinterpreter().HandleCommand() we can consume all output
@@ -484,6 +490,7 @@ Available settings:
  stackwin: enable stack window in context display.
  datawin: enable data window in context display, configure address with datawin.
  flow: call targets and objective-c class/methods.
+ frameformat: enable backtrace frame format to include file address.
  """
 
 	global CONFIG_ENABLE_COLOR
@@ -516,6 +523,11 @@ Available settings:
 	elif cmd[0] == "datawin":
 		CONFIG_DISPLAY_DATA_WINDOW = 1
 		print("[+] Enabled data window in context display. Configure address with \'datawin\' cmd.")
+	elif cmd[0] == "frameformat":
+		# upddate backtrace frame format to include file address
+		debugger.HandleCommand("settings set frame-format \"frame #${frame.index}: {${ansi.fg.cyan}${frame.pc}${ansi.normal} (0x${ansi.fg.yellow}${script.frame:lldbinit.frame_file_pc}${ansi.normal}) }{${module.file.basename}{\`}}{${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}{ at ${ansi.fg.cyan}${line.file.basename}${ansi.normal}:${ansi.fg.yellow}${line.number}${ansi.normal}{:${ansi.fg.yellow}${line.column}${ansi.normal}}}${frame.kind}{${function.is-optimized} [opt]}{${function.is-inlined} [inlined]}{${frame.is-artificial} [artificial]}\n\"", res)
+		print("[+] Enabled backtrace frame format to include file address.")
+	
 	elif cmd[0] == "help":
 		print(help)
 	else:
@@ -570,6 +582,10 @@ Available settings:
 	elif cmd[0] == "datawin":
 		CONFIG_DISPLAY_DATA_WINDOW = 0
 		print("[+] Disabled data window in context display.")
+	elif cmd[0] == "frameformat":
+		debugger.HandleCommand("settings set frame-format \"frame #${frame.index}: {${ansi.fg.cyan}${frame.pc}${ansi.normal} }{${module.file.basename}{\`}}{${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}{ at ${ansi.fg.cyan}${line.file.basename}${ansi.normal}:${ansi.fg.yellow}${line.number}${ansi.normal}{:${ansi.fg.yellow}${line.column}${ansi.normal}}}${frame.kind}{${function.is-optimized} [opt]}{${function.is-inlined} [inlined]}{${frame.is-artificial} [artificial]}\n\"", res)
+		print("[+] Disabled backtrace frame format to include file address.")
+	
 	elif cmd[0] == "help":
 		print(help)
 	else:
@@ -2006,6 +2022,18 @@ def cmd_objc(debugger: SBDebugger, command: str, result: SBCommandReturnObject, 
 	ci.HandleCommand(f'p *(({class_name} *){hex(objc_addr)})', res)
 	if res.Succeeded():
 		print(res.GetOutput())
+
+def cmd_cf_obj(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
+	'''
+		Return CoreFoundation object name, information, and more for debugging
+	'''
+
+	objc_addr = evaluate(command)
+	if not objc_addr:
+		print('cf_obj <register/address> => return CoreFoundation object name, information, and more for debugging')
+		return
+
+	# evaluate_expression = evaluate(f'((CFTypeRef)0x{objc_addr:X})')
 
 def cmd_pattern_create(debugger: SBDebugger, command: str, result: SBCommandReturnObject, dict: Dict):
 	pattern_length = parse_number(command) 

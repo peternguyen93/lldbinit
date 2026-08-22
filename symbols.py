@@ -392,7 +392,7 @@ def get_module_info_from_address(target: SBTarget, addr: int) -> ModuleInfo:
 				sect_name = split_str[1].upper()
 				seg_name = split_str[0]
 			return ModuleInfo(seg_name,
-								sect_name, 0,
+								sect_name, segment['perms'],
 								addr - segment['start'])
 
 	return module_info
@@ -401,6 +401,7 @@ class SegmentSymbol(TypedDict):
 	name: str
 	start: int
 	end: int
+	perms: int
 
 class CustomSymbols:
 	funcs: Dict[int, str]
