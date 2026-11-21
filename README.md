@@ -60,6 +60,33 @@ There are some user configurable options on the header. You can also use the ena
 
 ### Features
 
+New GUI
+![gui](images/new_gui.png)
+
+Support custom command to communicate with Ghidra or IDA to retrive functions, segment, user defined structs:
+* Load symbols from exported json check out script on tools/ida_symbol.json or tools/ghidra_symbol.json
+```
+sym load <dump symbol>.json
+```
+* Connect directly to ghidra or ida on tools/ida_server.json or tools/ghidra_server.json
+```
+sym connect localhost:<port>
+sym disconnect
+```
+* View backtrace on binary that does not have symbol or debug info
+```
+sym bt
+```
+* Set breakpoint
+```
+sym break <function_name> # require dumped json or server
+```
+* Print struct
+```
+sym print <struct name> <expr>
+```
+----
+
 The flow window shows the destination of calls, jmps, and returns, and also the class and selectors for Objective-C calls.
 
 ![vmmap, tele](images/im3.png)
