@@ -2,5 +2,6 @@
 	"cmake.configureOnOpen": false,
 	"python.analysis.extraPaths": [
 		"/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python/"
-	]
+	],
+	"python-envs.defaultEnvManager": "ms-python.python:system"
 }

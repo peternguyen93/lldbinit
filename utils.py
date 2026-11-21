@@ -12,8 +12,6 @@ from lldb import SBDebugger, SBFrame, SBProcess, SBThread, SBTarget, SBAddress, 
 from subprocess import Popen, PIPE, check_call, CalledProcessError
 from pathlib import Path
 from struct import pack, unpack
-from dataclasses import dataclass
-from bisect_local import bisect_left
 import ctypes
 import lldb
 import re
@@ -44,6 +42,7 @@ COLORS = {
 	"MAGENTA":   "\033[35m",
 	"CYAN":      "\033[36m",
 	"WHITE":     "\033[37m",
+	"DIM":       "\033[2m",
 	"RESET":     "\033[0m",
 	"BOLD":      "\033[1m",
 	"UNDERLINE": "\033[4m"
@@ -351,136 +350,6 @@ def find_module_by_name(target: SBTarget, module_name: str) -> Optional[SBModule
 
 def get_text_section(module: SBModule) -> SBSection:
 	return module.FindSection('__TEXT')
-
-@dataclass
-class MapInfo(object):
-	map_type: str
-	start: int
-	end: int
-	perm: str
-	shm: str
-	region: str
-
-class MacOSVMMapCache(object):
-	caches: List[MapInfo] # sorted MapInfo list by start address
-	is_loaded: bool
-
-	def __init__(self: Self) -> None:
-		self.caches = []
-		self.is_loaded = False
-		if platform.system() != 'Darwin':
-			print(f'[!] Command vmmap was not supported on {platform.system()}')
-	
-	def get_vmmap_info(self: Self) -> str:
-		process = get_process()
-		if not process:
-			return ''
-
-		process_info = process.GetProcessInfo()
-		if not process_info.IsValid():
-			return ''
-		
-		process_id = process_info.GetProcessID()
-		if process_id == 1:
-			return ''
-
-		cmd = ['vmmap', str(process_id), "-interleaved"]
-		proc = Popen(cmd, stdout = PIPE, stderr = PIPE)
-		out, _ = proc.communicate()
-
-		return out.decode('utf-8')
-	
-	def load_vmmap_info(self: Self):
-		# force update all MapInfo in self.caches
-		vmmap_info = self.get_vmmap_info()
-		if not vmmap_info:
-			return
-		
-		self.caches.clear()
-		match_map = re.findall(
-			r'([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-\/]+)\s+([A-Za-z=]+)([\x20-\x7F]+)?',
-			vmmap_info
-		)
-		max_name_len = max([len(line[0].strip()) for line in match_map])
-
-		if not match_map:
-			return None
-		
-		for m in match_map:
-			# add map_info to caches
-			o_map_info = MapInfo(m[0].strip().ljust(max_name_len, " "),
-								int(m[1], 16),
-								int(m[2], 16),
-								m[3],
-								m[4],
-								m[5].strip())
-			self.caches.append(o_map_info)
-		
-		# sort caches MapInfo by start address
-		sorted(self.caches, key=lambda mapinfo: mapinfo.start)
-
-	def cache_load(self: Self, force_reload: bool = False):
-		if not len(self.caches):
-			self.load_vmmap_info()
-		
-		if force_reload:
-			self.load_vmmap_info()
-	
-	def query_vmmap(self: Self, address: int) -> Optional[MapInfo]:
-		if not len(self.caches):
-			self.cache_load()
-
-		# search it in caches
-		tmp_map_info = MapInfo(start=address, end=0, perm='', shm='', region='', map_type='')
-		idx = bisect_left(self.caches, tmp_map_info, key=lambda o: o.start)
-
-		if  0 <= idx < len(self.caches):
-			# make sure index in current caches range
-			# if not use vmmap command line to search and update into cache
-			map_info = self.caches[idx]
-			if map_info.start <= address < map_info.end:
-				return self.caches[idx]
-
-		# if a new vmmap record hasn't found in caches, try to parse it from vmmap
-		process = get_process()
-		process_info = process.GetProcessInfo()
-		if not process_info.IsValid():
-			return None
-		
-		process_id = process_info.GetProcessID()
-		if process_id == 1:
-			return None
-
-		cmd = ['vmmap', str(process_id), hex(address)]
-		proc = Popen(cmd, stdout = PIPE, stderr=PIPE)
-		out, _ = proc.communicate()
-		out = out.decode('utf-8')
-
-		m = re.search(
-			r'\-\-\->\s+([\x20-\x7F]+)\s+([0-9a-f]+)\-([0-9a-f]+)\s+\[[0-9KMG\.\s]+\]\s+([rwx\-/]+)\s+([A-Za-z=]+)\s+([\x20-\x7F]+)',
-			out
-		)
-		if not m:
-			return None
-
-		# update new MapInfo into cache
-		map_info = MapInfo(m[1], int(m[2], 16), int(m[3], 16), m[4], m[5], m[6])
-		# idx return from bisect_left is the index to insert value to keep the order
-		idx = bisect_left(self.caches, map_info, key=lambda o: o.start)
-		if idx >= len(self.caches):
-			self.caches.append(map_info)
-		else:
-			self.caches.insert(idx, map_info)
-
-		return map_info
-	
-	def get_map_infos_by(self: Self, filter_cb: Callable[[MapInfo], bool]) -> List[MapInfo]:
-		retsult = []
-		for map_info in self.caches:
-			if filter_cb(map_info):
-				retsult.append(map_info)
-		return retsult
-
 
 # ----------------------------------------------------------
 # Memory Read/Write Support

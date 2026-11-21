@@ -4,7 +4,7 @@
 # Include all APIs that resolve address to debug symbol
 #
 from typing_extensions import Self
-from typing import Optional, TypedDict, Dict, Any, List, TypeVar, Callable, Optional
+from typing import Optional, TypedDict, Dict, Any, List, TypeVar, Callable, Union
 from utils import get_target, get_pointer_size, is_x64, strip_kernel_or_userPAC, \
 				is_aarch64, get_gp_register, get_current_sp, read_pointer_from, \
 				LLDBMemoryException, ESBValue, get_current_pc
@@ -16,6 +16,9 @@ from bisect_local import bisect_left
 import ctypes
 import re
 import json
+import urllib.request
+import urllib.parse
+from urllib.error import URLError
 
 POINTER_SIZE = 8 # assume target architecture is 64 bits
 
@@ -463,6 +466,14 @@ class CustomSymbols:
 				return self.funcs[found_addr]
 			return ''
 	
+	def query_func_addr(self: Self, func_name: str) -> Optional[int]:
+		# reverse lookup: resolve function name to ida mapped address
+		for func_addr, name in self.funcs.items():
+			if name == func_name:
+				return func_addr
+
+		return None
+	
 	def query_var_name(self: Self, var_addr: int) -> str:
 		try:
 			return self.variables[var_addr]
@@ -478,12 +489,128 @@ class CustomSymbols:
 
 CUSTOM_SYMBOLS = CustomSymbols()
 
+REMOTE_QUERY_TIMEOUT = 2.0
+
+class RemoteSymbols:
+	'''
+		live symbol source backed by an http symbol server (ida_server.py
+		inside IDA, ghidra server later) - same query interface as
+		CustomSymbols, each query is one http GET computed on the server
+		live, no local state except the endpoint and the slide
+	'''
+	endpoint: str
+	slide: int
+
+	def __init__(self: Self, endpoint: str):
+		self.endpoint = endpoint.rstrip('/')
+		self.slide = 0
+
+	def _get(self: Self, path: str, params: Dict[str, str]) -> Optional[Dict[str, Any]]:
+		# one http GET returning parsed json, None on any failure
+		try:
+			url = self.endpoint + path + '?' + urllib.parse.urlencode(params)
+			with urllib.request.urlopen(url, timeout=REMOTE_QUERY_TIMEOUT) as res:
+				return json.loads(res.read().decode('utf-8'))
+		except (URLError, OSError, ValueError):
+			return None
+
+	def connect(self: Self) -> Optional[Dict[str, Any]]:
+		# verify the server is alive, returns its /status dict or None
+		return self._get('/status', {})
+
+	@property
+	def is_loaded(self: Self) -> bool:
+		# live check, server answers /status
+		return self.connect() is not None
+
+	def query_segment(self: Self, addr: int) -> Optional[SegmentSymbol]:
+		# server addresses are ida mapped, translate runtime -> ida first
+		res = self._get('/query_segment', {'addr': hex(addr - self.slide)})
+		if not res:
+			return None
+
+		segment = res.get('segment')
+		if not segment:
+			return None
+
+		# translate the segment range back to runtime addresses
+		segment['start'] += self.slide
+		segment['end'] += self.slide
+		return segment
+
+	def query_segment_name(self: Self, addr: int) -> str:
+		segment = self.query_segment(addr)
+		if segment == None:
+			return ''
+		return segment['name']
+
+	def query_func_name(self: Self, func_addr: int) -> str:
+		# server addresses are ida mapped, translate runtime -> ida first
+		res = self._get('/query_func_name', {'addr': hex(func_addr - self.slide)})
+		if not res:
+			return ''
+		return res.get('name', '')
+
+	def query_func_addr(self: Self, func_name: str) -> Optional[int]:
+		res = self._get('/query_func_addr', {'name': func_name})
+		if not res or res.get('addr') is None:
+			return None
+
+		# ida mapped address -> runtime
+		return res['addr'] + self.slide
+
+	def query_var_name(self: Self, var_addr: int) -> str:
+		# server addresses are ida mapped, translate runtime -> ida first
+		res = self._get('/query_var_name', {'addr': hex(var_addr - self.slide)})
+		if not res:
+			return ''
+		return res.get('name', '')
+
+	def query_struct(self: Self, name: str) -> Optional[Dict[str, Any]]:
+		'''struct layout (name, size, fields with byte offsets) from the live server,
+		   None when the name is unknown or the server is unreachable - offsets are
+		   struct relative so no slide translation applies'''
+		res = self._get('/query_struct', {'name': name})
+		if not res:
+			return None
+
+		return res.get('struct')
+
+# active symbol source, None means use the static CUSTOM_SYMBOLS db
+_ACTIVE_SYMBOLS: Optional[Union[CustomSymbols, RemoteSymbols]] = None
+
+# bumped whenever the symbol source or its contents change, lets
+# consumers (like the register annotations) invalidate their caches
+SYMBOLS_GENERATION: int = 0
+
+def get_symbols_generation() -> int:
+	'''current symbol source generation, changes on sym load/connect/disconnect'''
+	return SYMBOLS_GENERATION
+
+def get_active_symbols() -> Union[CustomSymbols, RemoteSymbols]:
+	# current symbol source: live server when connected, static db otherwise
+	global _ACTIVE_SYMBOLS
+	if _ACTIVE_SYMBOLS is not None:
+		return _ACTIVE_SYMBOLS
+
+	return CUSTOM_SYMBOLS
+
+def set_active_symbols(symbols: Optional[Union[CustomSymbols, RemoteSymbols]]):
+	# switch the symbol source, pass None to fall back to the static db
+	global _ACTIVE_SYMBOLS, SYMBOLS_GENERATION
+	_ACTIVE_SYMBOLS = symbols
+	SYMBOLS_GENERATION += 1
+
 def load_custom_symbols(symbol_path: str):
+	global SYMBOLS_GENERATION
 	CUSTOM_SYMBOLS.load_symbols(symbol_path)
+	SYMBOLS_GENERATION += 1
 
 def custom_sym_backtrace(debugger: SBDebugger):
-	if not CUSTOM_SYMBOLS.is_loaded:
-		print('[!] Custom symbols did not loaded')
+	# resolve frames with the active symbol source (static custom db or live server)
+	symbols = get_active_symbols()
+	if not symbols.is_loaded:
+		print('[!] No symbol source loaded (sym load <db>.json or sym connect <port>)')
 		return
 
 	res = SBCommandReturnObject()
@@ -493,7 +620,7 @@ def custom_sym_backtrace(debugger: SBDebugger):
 	if not res.Succeeded():
 		print('[!] Unable to parse `bt` command output')
 		return
-	
+
 	output: str = res.GetOutput()
 
 	# parse frame and produce output
@@ -504,7 +631,7 @@ def custom_sym_backtrace(debugger: SBDebugger):
 
 		if not line:
 			continue
-		
+
 		_match = re.match(r'\s.+frame #(\d+):.*(0x[0-9a-fA-F]*)', line)
 		if not _match:
 			print('[!] Unable to parse frame for output')
@@ -512,7 +639,7 @@ def custom_sym_backtrace(debugger: SBDebugger):
 
 		str_addr = _match[2]
 		addr = strip_kernel_or_userPAC(int(str_addr, 16))
-		func_name = CUSTOM_SYMBOLS.query_func_name(addr)
+		func_name = symbols.query_func_name(addr)
 		if not func_name:
 			# couldn't resolve function name just print it
 			print(line)
