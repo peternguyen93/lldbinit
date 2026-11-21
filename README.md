@@ -85,6 +85,8 @@ sym break <function_name> # require dumped json or server
 ```
 sym print <struct name> <expr>
 ```
+![sym print, demo](images/sym_struct.png)
+
 ----
 
 The flow window shows the destination of calls, jmps, and returns, and also the class and selectors for Objective-C calls.

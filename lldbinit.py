@@ -2863,8 +2863,8 @@ def cmd_sym_print(struct_name: str, addr_token: str):
 			# arrays/blobs (char [], uint32 [] ...) render as a hex string
 			# instead of one huge integer, wrapped at 8 bytes per line
 			chunk_indent = ' ' * (13 + name_width + 3)
-			for i in range(0, fsize, 8):
-				hex_text = ' '.join('{0:02X}'.format(b) for b in raw[i:i + 8])
+			for i in range(0, fsize, 32):
+				hex_text = ' '.join('{0:02X}'.format(b) for b in raw[i:i + 32])
 				if i == 0:
 					print(f'{off_text}{name_text} : {dim}{hex_text}{reset}')
 				else:
