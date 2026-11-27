@@ -157,36 +157,74 @@ def get_symbol_from_address(address: int) -> str:
 		# use custom symbol
 		return get_custom_symbol_from_address(address)
 
+# dyld shared cache stubs dispatch another module's function in two shapes,
+# matched against '<mnemonic> <operands>' of the instructions at the stub,
+# ' ; ' joined into one line:
+#
+#   direct: adrp x16, <imm> ; add x16, x16, #<off> ; br x16
+#           -> the computed address IS the target
+#
+#   auth:   adrp x17, <imm> ; add x17, x17, #<off> ; ldr x16, [x17] ; braa x16, x17
+#           -> the computed address is a GOT slot, target = *slot (live process)
+DIRECT_STUB_RE = re.compile(
+	r'adrp\s+(?P<reg>x\d+),\s*(?P<imm>\d+|0x[0-9a-fA-F]+)\s*;\s*'
+	r'add\s+(?P=reg),\s*(?P=reg),\s*#(?P<off>0x[0-9a-fA-F]+|\d+)\s*;\s*'
+	r'(?:br|blr)\s+(?P=reg)'
+)
+
+AUTH_STUB_RE = re.compile(
+	r'adrp\s+(?P<reg>x\d+),\s*(?P<imm>\d+|0x[0-9a-fA-F]+)\s*;\s*'
+	r'add\s+(?P=reg),\s*(?P=reg),\s*#(?P<off>0x[0-9a-fA-F]+|\d+)\s*;\s*'
+	r'ldr\s+(?P<dst>x\d+),\s*\[(?P=reg)\]\s*;\s*'
+	r'(?:(?:br|blr)\s+(?P=dst)|(?:braa|blraa)\s+(?P=dst),\s*(?P=reg))'
+)
+
 def arm64_resolve_dispatch_function_name(target: SBTarget, target_address: int) -> int:
 	'''
 		target: SBTarget
 		target_address : target call address bl <addr>
-		@return : a symbol if error return empty string
+		@return : dispatched function address, 0 on failure
 
-		dyld_shared_cache of iOS alway dispatch an other module function by:
-		libdispatch:__stubs:00000001800B2E28                 ADRP            X16, #0x193E1A460@PAGE
-		libdispatch:__stubs:00000001800B2E2C                 ADD             X16, X16, #0x193E1A460@PAGEOFF
-		libdispatch:__stubs:00000001800B2E30                 BR              X16
+		dyld_shared_cache of iOS alway dispatch an other module function
+		through a stub, two shapes are supported:
 
-		out goal to resolve symbol for this address
+		libdispatch:__stubs:00000001800B2E28   ADRP X16, #0x193E1A460@PAGE
+		libdispatch:__stubs:00000001800B2E2C   ADD  X16, X16, #0x193E1A460@PAGEOFF
+		libdispatch:__stubs:00000001800B2E30   BR   X16
+		-> direct stub, return the computed address
+
+		0x1b42a0150   adrp  x17, <page>
+		0x1b42a0154   add   x17, x17, #0xd8
+		0x1b42a0158   ldr   x16, [x17]
+		0x1b42a015c   braa  x16, x17     ; malloc_type_malloc
+		-> auth stub, return the target loaded from the GOT slot
 	'''
-	instructions = read_instructions(target, target_address, 3)
-	instruction_0: SBInstruction = instructions.GetInstructionAtIndex(0)
-	instruction_1: SBInstruction = instructions.GetInstructionAtIndex(1)
-	instruction_2: SBInstruction = instructions.GetInstructionAtIndex(2)
+	instructions = read_instructions(target, target_address, 4)
 
-	if instruction_0.GetMnemonic(target) != 'adrp' or \
-		instruction_1.GetMnemonic(target) != 'add' or \
-		(instruction_2.GetMnemonic(target) != 'br' and \
-			   instruction_2.GetOperands(target).startswith('x')):
-		return 0
-	
-	page_shift = int(instruction_0.GetOperands(target).split(',')[1])
-	target_page = (target_address + page_shift * 0x1000) & 0xFFFFFFFFFFFFF000
-	call_offset = int(instruction_1.GetOperands(target).split(',')[2].strip(' #'), 16)
-	call_func_ptr = target_page + call_offset 
+	# '<mnemonic> <operands>' for the first four instructions, ' ; ' joined
+	inst_texts = ' ; '.join(
+		'{0} {1}'.format(inst.GetMnemonic(target).strip(), inst.GetOperands(target).strip())
+		for inst in (instructions.GetInstructionAtIndex(i) for i in range(4))
+	)
 
-	return call_func_ptr
+	direct = DIRECT_STUB_RE.match(inst_texts)
+	if direct:
+		page = int(direct.group('imm'), 0)
+		offset = int(direct.group('off'), 0)
+		return ((target_address + page * 0x1000) & 0xFFFFFFFFFFFFF000) + offset
+
+	auth = AUTH_STUB_RE.match(inst_texts)
+	if auth:
+		page = int(auth.group('imm'), 0)
+		offset = int(auth.group('off'), 0)
+		slot_addr = ((target_address + page * 0x1000) & 0xFFFFFFFFFFFFF000) + offset
+		try:
+			# the real target lives in the GOT slot, needs a live process
+			return read_pointer_from(slot_addr, get_pointer_size())
+		except LLDBMemoryException:
+			return 0
+
+	return 0
 
 # retrieve the module full path name an address belongs to
 def get_module_name(src_addr: int) -> str:
@@ -606,6 +644,9 @@ def load_custom_symbols(symbol_path: str):
 	CUSTOM_SYMBOLS.load_symbols(symbol_path)
 	SYMBOLS_GENERATION += 1
 
+# lldb unnamed symbols embed the module file address in their name
+UNNAMED_SYMBOL_RE = re.compile(r'___lldb_unnamed_symbol_([0-9a-fA-F]+)')
+
 def custom_sym_backtrace(debugger: SBDebugger):
 	# resolve frames with the active symbol source (static custom db or live server)
 	symbols = get_active_symbols()
@@ -639,6 +680,23 @@ def custom_sym_backtrace(debugger: SBDebugger):
 
 		str_addr = _match[2]
 		addr = strip_kernel_or_userPAC(int(str_addr, 16))
+
+		# lldb could not name this frame: ___lldb_unnamed_symbol_<file_addr>
+		# embeds the module file address, which is the ida address for dyld
+		# shared cache idbs - query the active source (static db or live
+		# server) with it directly, no slide math involved
+		unnamed = UNNAMED_SYMBOL_RE.search(line)
+		if unnamed:
+			ida_addr = int(unnamed.group(1), 16)
+			# CustomSymbols wants the file addr as-is; RemoteSymbols
+			# subtracts its slide internally, so add it back here
+			func_name = symbols.query_func_name(ida_addr + getattr(symbols, 'slide', 0))
+			if func_name:
+				print(UNNAMED_SYMBOL_RE.sub(func_name, line, count=1))
+			else:
+				print(line)
+			continue
+
 		func_name = symbols.query_func_name(addr)
 		if not func_name:
 			# couldn't resolve function name just print it
@@ -646,3 +704,19 @@ def custom_sym_backtrace(debugger: SBDebugger):
 		else:
 			idx = line.index(str_addr) + len(str_addr)
 			print(line[:idx] + f' - {func_name}' + line[idx:])
+
+def query_func_name_from_file(file_addr: int) -> str:
+	'''
+		file_addr: module file address (not a load address)
+		@return: function name from the active symbol source, '' on failure
+
+		resolve a module file address through the active symbol source
+		(static custom db or live server): CustomSymbols wants the file
+		addr as-is, RemoteSymbols subtracts its slide internally so the
+		slide is added back here. for dyld shared cache idbs the file
+		address is the ida address, callers need no slide math at all
+	'''
+	symbols = get_active_symbols()
+	if not symbols.is_loaded:
+		return ''
+	return symbols.query_func_name(file_addr + getattr(symbols, 'slide', 0))

@@ -81,7 +81,7 @@ try:
 except ImportError:
 	CONFIG_KEYSTONE_AVAILABLE = 0
 
-VERSION = "3.0"
+VERSION = "2.6"
 
 #
 # User configurable options
@@ -2806,11 +2806,12 @@ def resolve_sym_print_addr(token: str) -> Optional[int]:
 	except ValueError:
 		return None
 
-def cmd_sym_print(struct_name: str, addr_token: str):
+def cmd_sym_print(struct_name: str, addr_token: str, max_buffer: Optional[str] = None):
 	'''
 		dump a struct layout from a live symbol server at an address
-		usage: sym print <struct_name> <address> - address can be a register
-		(x0), an expression ($x0+8) or a plain 0x value
+		usage: sym print <struct_name> <address> [max_buffer_bytes] - address can be a register
+		(x0), an expression ($x0+8) or a plain 0x value; max_buffer_bytes caps how many
+		bytes render for fields larger than 8 bytes (default 0 = full field)
 	'''
 	symbols = get_active_symbols()
 	if not isinstance(symbols, RemoteSymbols):
@@ -2826,6 +2827,17 @@ def cmd_sym_print(struct_name: str, addr_token: str):
 	if addr is None:
 		print(f'[-] Unable to resolve address {addr_token!r} (try x0, $x0+8 or a 0x value)')
 		return
+
+	max_bytes = 0
+	if max_buffer is not None:
+		try:
+			max_bytes = int(max_buffer, 0)
+		except ValueError:
+			print(f'[-] invalid max buffer size {max_buffer!r} (try 64 or 0x40)')
+			return
+		if max_bytes < 0:
+			print(f'[-] max buffer size must be >= 0, got {max_bytes}')
+			return
 
 	fields = layout.get('fields', [])
 	size = int(layout.get('size', 0) or 0)
@@ -2861,14 +2873,18 @@ def cmd_sym_print(struct_name: str, addr_token: str):
 
 		if fsize > 8:
 			# arrays/blobs (char [], uint32 [] ...) render as a hex string
-			# instead of one huge integer, wrapped at 8 bytes per line
+			# instead of one huge integer, 16 bytes per line; a positive
+			# max_buffer_bytes caps the rendered bytes per field
 			chunk_indent = ' ' * (13 + name_width + 3)
-			for i in range(0, fsize, 32):
-				hex_text = ' '.join('{0:02X}'.format(b) for b in raw[i:i + 32])
+			show = fsize if max_bytes == 0 else min(fsize, max_bytes)
+			for i in range(0, show, 16):
+				hex_text = ' '.join('{0:02X}'.format(b) for b in raw[i:i + 16])
 				if i == 0:
 					print(f'{off_text}{name_text} : {dim}{hex_text}{reset}')
 				else:
 					print(f'{chunk_indent}{dim}{hex_text}{reset}')
+			if show < fsize:
+				print(f'{chunk_indent}{dim}... {fsize - show} more bytes{reset}')
 			continue
 
 		value = int.from_bytes(raw, byteorder=byte_order)
@@ -2897,7 +2913,7 @@ def cmd_custom_sym(
 		print('- sym break <function_name>: set breakpoint at function from custom symbol db')
 		print('- sym connect [host:]<port>: use a live ida/ghidra symbol server as symbol source (default 127.0.0.1:9001)')
 		print('- sym disconnect: fall back to the static custom symbol db')
-		print('- sym print <struct_name> <address>: dump a struct layout from a live symbol server at an address (register or expression)')
+		print('- sym print <struct_name> <address> [max_buffer_bytes]: dump a struct layout from a live symbol server at an address (register or expression)')
 		return
 	
 	sub_cmd = args[0]
@@ -2922,12 +2938,14 @@ def cmd_custom_sym(
 		cmd_sym_disconnect()
 
 	elif sub_cmd == 'print':
+		args = [a for a in args if a]   # tolerate trailing/double spaces
 		if len(args) < 3:
-			print('sym print <struct_name> <address>')
+			print('sym print <struct_name> <address> [max_buffer_bytes]')
 			print('    address can be a register (x0), an expression ($x0+8) or a plain 0x value')
+			print('    max_buffer_bytes caps fields larger than 8 bytes, 16 bytes per line (default 0 = full field)')
 			return
 
-		cmd_sym_print(args[1], args[2])
+		cmd_sym_print(args[1], args[2], args[3] if len(args) > 3 else None)
 
 	else:
 		print(f'[!] Unsupported sym command {sub_cmd}')

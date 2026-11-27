@@ -23,7 +23,8 @@ from symbols import get_symbol_from_address, arm64_resolve_dispatch_function_nam
 					get_current_pc_inst, get_indirect_address_from, get_indirect_flow_address, \
 					get_indirect_flow_dest, \
 					get_active_symbols, get_symbols_generation, \
-					get_module_info_from_address, POINTER_SIZE
+					get_module_info_from_address, POINTER_SIZE, \
+					UNNAMED_SYMBOL_RE, query_func_name_from_file
 from vmmap import *
 
 #
@@ -250,10 +251,26 @@ def disassemble(start_address: int, count: int):
 			indirect_addr = get_indirect_flow_dest(memory_addr)
 			dyld_call_addr = arm64_resolve_dispatch_function_name(target, indirect_addr)
 			dyld_resolve_name = get_symbol_from_address(dyld_call_addr)
+			# same ___lldb_unnamed_symbol_<file_addr> placeholder swap as above,
+			# for resolved dispatch stubs whose target lldb cannot name
+			unnamed = UNNAMED_SYMBOL_RE.search(dyld_resolve_name or '')
+			if unnamed:
+				real_name = query_func_name_from_file(int(unnamed.group(1), 16))
+				if real_name:
+					dyld_resolve_name = real_name
 		
 		if not dyld_resolve_name:
 			comment:str = file_inst.GetComment(target)
 			if comment:
+				# lldb comments carry the useless ___lldb_unnamed_symbol_<file_addr>
+				# placeholder for dyld shared cache branches - swap it for the
+				# active symbol source's name (static db or live server), the
+				# embedded file address is the ida address, no slide math needed
+				unnamed = UNNAMED_SYMBOL_RE.search(comment)
+				if unnamed:
+					real_name = query_func_name_from_file(int(unnamed.group(1), 16))
+					if real_name:
+						comment = UNNAMED_SYMBOL_RE.sub(real_name, comment, count=1)
 				comment = f" ; {comment}"
 		else:
 			comment = f" ; resolve symbol stub: j___{dyld_resolve_name}"
